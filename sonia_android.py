@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sonia_android.py
+musicaplayer_android.py
 ────────────────────────────────────────────────────────
-Sonia for Android — Mobile music player via Web browser UI
-Running on Android Termux with ffmpeg + mpv pipeline
+Android Termux Hi-Res Music Player with Web Browser UI
+Android Beginner Version of Xubuntu24 Edition (musicaplayerg26x.py)
 
 【Features】
-  - Plays music files from internal storage Music folder
-  - ffmpeg → mpv pipeline (EQ & gain processing, no middleware)
-  - EQ / gain preset management
-  - Internet radio streaming
-  - Album art display
-  - Mobile-optimized Web browser UI
+  - Play music files from /sdcard/Music
+  - ffmpeg → mpv pipe (EQ/Gain processing, no middleware)
+  - EQ/Gain preset management
+  - Internet radio playback
+  - Album cover display
+  - Mobile-optimized Web Browser UI
 
 【Setup (Termux)】
   pkg update && pkg upgrade
   pkg install python ffmpeg mpv
   pip install mutagen
 
-【Usage】
-  python sonia_android.py   (or: musica)
-  → Open http://localhost:8080 in your browser
-  → From other devices on the same Wi-Fi: http://<TermuxIP>:8080
+  # Grant /sdcard access (first time only)
+  termux-setup-storage
 
-【Notes】
-  aplay/ALSA → mpv  (Android handles BT/wired switching automatically)
-  curses UI  → Mobile Web browser UI
-  feh        → Album art shown in browser
+【How to Use】
+  python musicaplayer_android.py
+  → Open http://localhost:8080 in browser
+  → From other devices on same Wi-Fi: http://<Termux-IP>:8080
+
+【Differences from Xubuntu24 Version】
+  aplay/ALSA → mpv (auto BT/wired switching on Android)
+  curses UI  → Mobile Web Browser UI
+  feh        → In-browser cover display
+  vosk voice recognition → Not supported (future support planned)
 """
 
 import os
@@ -55,7 +59,7 @@ except ImportError:
 def _find_all_music_dirs():
     """
     Return music folders accessible from Termux.
-    List all paths under ~/storage/ (deduplication is done at file level).
+    List all contents under ~/storage/ (deduplication handled at file level).
     """
     base = os.path.expanduser("~/storage")
     result = []
@@ -88,7 +92,7 @@ MPV_SOCKET     = '/tmp/mpvsocket_android'
 
 # ══════════════════════════════════════════════
 #  EQ Presets
-#  mpv lavfi equalizer 10-band (dB)
+#  mpv lavfi equalizer 10 bands (dB)
 #  31Hz / 62Hz / 125Hz / 250Hz / 500Hz /
 #  1kHz / 2kHz / 4kHz / 8kHz / 16kHz
 # ══════════════════════════════════════════════
@@ -114,14 +118,14 @@ EQ_LABELS = {
 # ══════════════════════════════════════════════
 GAIN_PRESETS = {
     'classical':  0,
-    'jazz_pop':  -5,
-    'loud':      -8,
-    'quiet':      2,
+    'jazz_pop':  -4,
+    'loud':      -6,
+    'quiet':      2
 }
 GAIN_LABELS = {
     'classical':'Classical (0dB)',
-    'jazz_pop': 'Jazz/Pop (-2dB)',
-    'loud':     'Loud (-3dB)',
+    'jazz_pop': 'Jazz/Pop (-4dB)',
+    'loud':     'Loud (-6dB)',
     'quiet':    'Quiet (+2dB)',
 }
 
@@ -130,25 +134,25 @@ GAIN_LABELS = {
 # ══════════════════════════════════════════════
 RADIO_STATIONS = [
     {'name':'Classic FM',          'url':'https://media-ssl.musicradio.com/ClassicFM',
-     'desc':'UK classical music specialist', 'flag':'🇬🇧'},
+     'desc':'British classical music station', 'flag':'🇬🇧'},
     {'name':'Classic FM Calm',     'url':'https://media-ssl.musicradio.com/ClassicFMCalm',
-     'desc':'Relaxing classical music', 'flag':'🇬🇧'},
+     'desc':'Relaxing classical', 'flag':'🇬🇧'},
     {'name':'Classic FM Movies',   'url':'https://media-ssl.musicradio.com/ClassicFM-M-Movies',
-     'desc':'Movie soundtracks & film music', 'flag':'🇬🇧'},
+     'desc':'Film music channel', 'flag':'🇬🇧'},
     {'name':'Radio X Classic Rock','url':'https://media-ssl.musicradio.com/RadioXClassicRock',
-     'desc':'Classic rock specialist', 'flag':'🇬🇧'},
+     'desc':'Classic rock station', 'flag':'🇬🇧'},
     {'name':'Capital FM',          'url':'https://media-ssl.musicradio.com/CapitalUK',
-     'desc':'Pop & Top 40 chart hits', 'flag':'🇬🇧'},
+     'desc':'Pop & Top 40 Chart', 'flag':'🇬🇧'},
     {'name':'Heart',               'url':'https://media-ssl.musicradio.com/HeartUK',
-     'desc':'Adult contemporary pop', 'flag':'🇬🇧'},
+     'desc':'Adult Contemporary Pop', 'flag':'🇬🇧'},
     {'name':'Capital Xtra',        'url':'https://media-ssl.musicradio.com/CapitalXTRANational',
-     'desc':'Hip-hop & R&B specialist', 'flag':'🇬🇧'},
+     'desc':'Hip-Hop & R&B Station', 'flag':'🇬🇧'},
     {'name':'Smooth Radio',        'url':'https://media-ssl.musicradio.com/SmoothUK',
-     'desc':'Smooth R&B & soul', 'flag':'🇬🇧'},
+     'desc':'Smooth R&B & Soul', 'flag':'🇬🇧'},
     {'name':'Jazz24',              'url':'https://knkx-live-a.edge.audiocdn.com/6285_256k',
-     'desc':'NPR jazz specialist · 256kbps hi-quality', 'flag':'🇺🇸'},
+     'desc':'NPR Jazz Station - 256kbps Hi-Fi', 'flag':'🇺🇸'},
     {'name':'KJazz 88.1 FM',       'url':'https://streaming.live365.com/a49833',
-     'desc':'Los Angeles jazz & blues (since 1981)', 'flag':'🇺🇸'},
+     'desc':'Los Angeles Jazz & Blues (since 1981)', 'flag':'����🇸'},
 ]
 
 # ══════════════════════════════════════════════
@@ -163,7 +167,7 @@ state = {
     'volume':        85,
     'eq_preset':      'none',
     'gain_preset':    'classical',
-    'gain_db':         0,
+    'gain_db':        -3,
     'bass_db':        0,
     'treble_db':      0,
     'current_track': None,
@@ -171,7 +175,7 @@ state = {
     '_skip_next':    False,
     '_skip_prev':    False,
     'last_station':   None,   # Last played radio station
-    'last_radio_mode': False, # Was radio playing before stop?
+    'last_radio_mode': False, # Was radio playing before stop
     'last_position':  0,      # Last playback position (seconds)
 }
 
@@ -183,7 +187,7 @@ cover_cache     = {}   # path → cover tmp path
 _db_lock        = threading.Lock()
 
 # ══════════════════════════════════════════════
-#  Metadata & Album Art
+#  Metadata & Cover Art Retrieval
 # ══════════════════════════════════════════════
 def get_metadata(path):
     with _db_lock:
@@ -230,7 +234,7 @@ def get_metadata(path):
         if hasattr(audio, 'info') and audio.info:
             meta['duration'] = int(getattr(audio.info, 'length', 0))
 
-        # Cover art (embedded)
+        # Embedded cover art
         cover_data = None
         if audio.tags:
             tags = audio.tags
@@ -263,7 +267,7 @@ def get_metadata(path):
 
 
 def find_folder_cover(track_path):
-    """Search for album art image file in folder"""
+    """Find album cover image in folder"""
     folder = os.path.dirname(track_path)
     try:
         files = os.listdir(folder)
@@ -282,7 +286,7 @@ def find_folder_cover(track_path):
 
 
 def get_cover(track_path):
-    """Return cover art path (embedded art takes priority, then folder image)"""
+    """Return cover path (embedded priority, then folder image)"""
     meta = get_metadata(track_path)
     if meta.get('cover') and os.path.exists(meta['cover']):
         return meta['cover']
@@ -293,14 +297,14 @@ def get_cover(track_path):
 def scan_music():
     """
     Scan music files.
-    - Recursively search each directory
-    - Deduplicate by real path (prevents duplicates via symlinks)
-    - Print count per directory to console
+    - Recursively scan each directory
+    - Deduplicate by real file path (prevent symlink duplicates)
+    - Display count per directory
     """
     tracks = []
     seen_real = set()
 
-    print(f"  Search folders: {len(MUSIC_DIRS)} found")
+    print(f"  Search folders: {len(MUSIC_DIRS)} directories")
     for d in MUSIC_DIRS:
         if not os.path.isdir(d):
             print(f"  ❌ Not found: {d}")
@@ -310,7 +314,6 @@ def scan_music():
         try:
             for root, dirs, files in os.walk(d, followlinks=False):
                 dirs.sort()
-                # "shared" overlaps with music/external-1, skip deep traversal
                 for f in sorted(files):
                     if not f.lower().endswith(SUPPORTED_EXTENSIONS):
                         continue
@@ -329,7 +332,7 @@ def scan_music():
 
         found = len(tracks) - count_before
         mark = "✅" if found > 0 else "⚠ "
-        print(f"  {mark} {d}  → {found} track(s)")
+        print(f"  {mark} {d}  → {found} tracks")
 
     return tracks
 
@@ -359,10 +362,10 @@ def mpv_set(prop, val):
     mpv_send(['set_property', prop, val])
 
 # ══════════════════════════════════════════════
-#  ffmpeg Filter Builder
-# ══════════════════════════════════════════════
+#  ffmpeg Filter Generation
+# ═══════════════════════════��══════════════════
 def build_af(eq_preset, gain_db):
-    """Build ffmpeg -af filter string (gain + EQ + bass/treble tone)"""
+    """Generate ffmpeg -af string (gain + EQ + bass/treble tone)"""
     freqs   = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     bands   = EQ_PRESETS.get(eq_preset, EQ_PRESETS['none'])
     filters = [f'volume={gain_db}dB']
@@ -435,7 +438,7 @@ def play_track(path):
         }
         state['cover_path'] = get_cover(path)
 
-        # If seek position specified, wait then seek
+        # Seek if position specified
         seek_pos = state.get('last_position', 0)
         state['last_position'] = 0
         if seek_pos > 2:
@@ -478,7 +481,7 @@ def play_radio(station):
         }
         state['cover_path'] = None
     except Exception as e:
-        print(f"❌ Radio error: {e}")
+        print(f"❌ Radio playback error: {e}")
 
 
 def _playlist_runner():
@@ -566,14 +569,14 @@ def save_presets(data):
 
 # ══════════════════════════════════════════════
 #  Web UI HTML (Mobile Optimized)
-# ══════════════════════════════════════════════
+# ═════════════════════════���════════════════════
 def build_html():
     radio_json = json.dumps(RADIO_STATIONS, ensure_ascii=False)
     eq_json    = json.dumps(EQ_LABELS,      ensure_ascii=False)
     gain_json  = json.dumps(GAIN_LABELS,    ensure_ascii=False)
 
     return f"""<!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
@@ -586,18 +589,18 @@ def build_html():
   --tx:#eeeef5; --tx2:#888899; --brd:#2a2a38; --red:#ef4444; --grn:#22c55e;
 }}
 *{{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}}
-body{{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden;overscroll-behavior:none}}
+body{{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh;overscroll-behavior:none}}
 
 /* ── Tabs ── */
-.tabs{{display:flex;background:var(--sf);border-bottom:1px solid var(--brd);flex-shrink:0;z-index:100}}
+.tabs{{display:flex;background:var(--sf);border-bottom:1px solid var(--brd);position:sticky;top:0;z-index:100}}
 .tab{{flex:1;padding:13px 2px;text-align:center;font-size:10.5px;color:var(--tx2);cursor:pointer;border:none;background:none;letter-spacing:.03em;transition:color .2s}}
 .tab.active{{color:var(--ac2);box-shadow:inset 0 -2px 0 var(--ac)}}
 
 /* ── Pages ── */
-.page{{display:none;padding:14px 14px 20px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}}
-.page.active{{display:block;flex:1;overflow-y:auto}}
+.page{{display:none;padding:14px 14px 190px}}
+.page.active{{display:block}}
 
-/* ── Now Playing card ── */
+/* ── Now Playing Card ── */
 .np-card{{background:var(--sf);border-radius:18px;padding:22px 18px;text-align:center;margin-bottom:14px}}
 .cover-wrap{{position:relative;width:190px;height:190px;margin:0 auto 16px;border-radius:14px;overflow:hidden;background:var(--sf2)}}
 .cover-wrap img{{width:100%;height:100%;object-fit:cover}}
@@ -633,7 +636,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .chip{{padding:7px 15px;border-radius:20px;border:1px solid var(--brd);background:var(--sf2);color:var(--tx2);font-size:13px;cursor:pointer;transition:all .2s;user-select:none}}
 .chip.on{{background:var(--ac);border-color:var(--ac);color:#fff;box-shadow:0 0 10px rgba(124,106,247,.4)}}
 
-/* ── Track list ── */
+/* ── Track List ── */
 .trk{{display:flex;align-items:center;padding:9px 10px;border-radius:10px;gap:11px;cursor:pointer;transition:background .15s}}
 .trk:active{{background:var(--sf2)}}
 .trk.playing .ti-title{{color:var(--ac2)}}
@@ -646,7 +649,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .ti-sub{{font-size:11.5px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
 .ti-dur{{font-size:11px;color:var(--tx2);flex-shrink:0}}
 
-/* ── Album jacket grid ── */
+/* ── Album Grid ── */
 .view-toggle{{display:flex;gap:7px;margin-bottom:10px}}
 .vbtn{{flex:1;padding:9px 0;border-radius:10px;border:1px solid var(--brd);background:var(--sf2);color:var(--tx2);font-size:13px;cursor:pointer;font-weight:600;transition:all .2s}}
 .vbtn.on{{background:var(--ac);border-color:var(--ac);color:#fff}}
@@ -669,7 +672,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .ri-info{{flex:1}}
 .ri-name{{font-size:15px;font-weight:600}}
 .ri-desc{{font-size:12px;color:var(--tx2);margin-top:2px}}
-.ri-btn{{font-size:24px;color:var(--ac);font-weight:bold;min-width:32px;text-align:center}}
+.ri-btn{{font-size:20px;color:var(--tx2)}}
 
 /* ── Presets ── */
 .pre-save{{display:flex;gap:8px;margin-bottom:14px}}
@@ -692,8 +695,8 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .btn-full{{width:100%;padding:13px;background:var(--ac);color:#fff;border:none;border-radius:13px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:9px;letter-spacing:.03em}}
 .btn-full.ghost{{background:var(--sf2);color:var(--ac2)}}
 
-/* ── Mini player ── */
-.mini{{flex-shrink:0;background:rgba(23,23,31,.97);border-top:1px solid var(--brd);padding:10px 14px 22px;display:flex;align-items:center;gap:11px;z-index:200}}
+/* ── Mini Player ── */
+.mini{{position:fixed;bottom:0;left:0;right:0;background:rgba(23,23,31,.97);backdrop-filter:blur(12px);border-top:1px solid var(--brd);padding:10px 14px 22px;display:flex;align-items:center;gap:11px;z-index:200}}
 .mini-cov{{width:50px;height:50px;border-radius:9px;background:var(--sf2);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:26px;overflow:hidden}}
 .mini-cov img{{width:100%;height:100%;object-fit:cover}}
 .mini-info{{flex:1;min-width:0}}
@@ -706,7 +709,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 /* ── Utilities ── */
 .xubuntu-banner{{background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid var(--ac);border-radius:12px;padding:10px 14px;font-size:12.5px;color:var(--ac2);text-align:center;margin-bottom:13px;letter-spacing:.02em}}
 .xubuntu-banner a{{color:var(--ac2);text-decoration:underline;text-underline-offset:3px}}
-/* ── Tone sliders ── */
+/* ── Tone Slider ── */
 .tone-row{{display:flex;align-items:center;gap:10px;margin:6px 0}}
 .tone-label{{font-size:12px;color:var(--tx2);width:36px;text-align:right;flex-shrink:0}}
 .tone-val{{font-size:12px;color:var(--ac2);width:36px;text-align:left;flex-shrink:0}}
@@ -725,13 +728,13 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 
 <!-- ── Now Playing ── -->
 <div id="pg-now" class="page active">
-  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Step up to Sonia for Xubuntu24 for higher quality & more features!</a></div>
+  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
   <div class="np-card">
     <div class="cover-wrap">
       <div class="cover-icon" id="cover-icon">🎵</div>
       <img id="cover-img" src="" alt="" style="display:none;position:absolute;inset:0">
     </div>
-    <div class="np-title"  id="np-title">Nothing playing</div>
+    <div class="np-title"  id="np-title">No track playing</div>
     <div class="np-artist" id="np-artist">-</div>
     <div class="np-album"  id="np-album">-</div>
 
@@ -763,7 +766,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
   <div class="sec">EQ Presets</div>
   <div class="chips" id="eq-chips"></div>
 
-  <div class="sec">Bass / Treble</div>
+  <div class="sec">Bass & Treble</div>
   <div class="tone-row">
     <span class="tone-label">🔉 Bass</span>
     <input type="range" id="bass-sl" min="-12" max="12" value="0" step="1"
@@ -783,26 +786,26 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 
 <!-- ── Library ── -->
 <div id="pg-lib" class="page">
-  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Step up to Sonia for Xubuntu24 for higher quality & more features!</a></div>
-  <input class="srch" type="search" id="srch" placeholder="🔍 Search title / artist / album..." oninput="filterTrks()">
+  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
+  <input class="srch" type="search" id="srch" placeholder="🔍 Search by title, artist or album..." oninput="filterTrks()">
   <div class="view-toggle">
     <button class="vbtn on" id="vbtn-list" onclick="setView('list')">☰ List</button>
-    <button class="vbtn"    id="vbtn-jacket" onclick="setView('jacket')">▦ Jacket</button>
+    <button class="vbtn"    id="vbtn-jacket" onclick="setView('jacket')">▦ Album</button>
   </div>
   <button class="btn-full" onclick="doScan()">📂 Scan Library</button>
   <button class="btn-full ghost" onclick="shuffleAll()">🔀 Shuffle All</button>
-  <div id="trk-list"><div class="empty">Press "Scan Library" to start</div></div>
+  <div id="trk-list"><div class="empty">Click "Scan Library" to start</div></div>
 </div>
 
 <!-- ── Radio ── -->
 <div id="pg-radio" class="page">
-  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Step up to Sonia for Xubuntu24 for higher quality & more features!</a></div>
+  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
   <div id="radio-list"></div>
 </div>
 
 <!-- ── Settings ── -->
 <div id="pg-set" class="page">
-  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Step up to Sonia for Xubuntu24 for higher quality & more features!</a></div>
+  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
   <div class="sec">Save Current Settings as Preset</div>
   <div class="pre-save">
     <input type="text" id="pre-nm-in" placeholder="Preset name">
@@ -811,23 +814,23 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
   <div class="sec">Saved Presets</div>
   <div id="pre-list"><div class="empty">No presets saved yet</div></div>
 
-  <div class="sec" style="margin-top:32px">Music Folder Settings</div>
+  <div class="sec" style="margin-top:32px">Music Folders</div>
   <div style="background:var(--sf);border-radius:13px;padding:14px;font-size:13px;color:var(--tx2);margin-bottom:10px">
-    <div style="margin-bottom:8px;color:var(--tx);font-weight:600">🔍 Search Folders (auto-detected)</div>
-    <div id="dir-list" style="line-height:2;font-size:12px;word-break:break-all">Loading...<//div>
+    <div style="margin-bottom:8px;color:var(--tx);font-weight:600">🔍 Search Folders (Auto-detected)</div>
+    <div id="dir-list" style="line-height:2;font-size:12px;word-break:break-all">Loading...</div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:14px">
-    <input type="text" id="custom-dir" placeholder="e.g. /storage/XXXX-XXXX/Music"
+    <input type="text" id="custom-dir" placeholder="/storage/XXXX-XXXX/Music etc."
       style="flex:1;background:var(--sf);border:1px solid var(--brd);color:var(--tx);padding:11px 12px;border-radius:11px;font-size:13px">
     <button onclick="addDir()" style="background:var(--ac);color:#fff;border:none;padding:11px 16px;border-radius:11px;font-size:13px;cursor:pointer;font-weight:600">Add</button>
   </div>
-  <button class="btn-full" onclick="rescan()">📂 Re-scan</button>
+  <button class="btn-full" onclick="rescan()">📂 Rescan</button>
 
   <div class="sec" style="margin-top:24px">Connection Info</div>
   <div style="background:var(--sf);border-radius:13px;padding:14px;font-size:13px;line-height:2;color:var(--tx2)">
-    <div>🌐 This server: <span style="color:var(--ac2)" id="srv-url"></span></div>
-    <div>🔊 Playback engine: ffmpeg → mpv</div>
-    <div style="margin-top:8px;font-size:11px">Step up to Sonia for Xubuntu24<br>for higher quality & more features 🎶</div>
+    <div>🌐 Server: <span style="color:var(--ac2)" id="srv-url"></span></div>
+    <div>🔊 Engine: ffmpeg → mpv</div>
+    <div style="margin-top:8px;font-size:11px">Upgrade to Xubuntu24 Edition<br>for higher quality & more features 🎶</div>
   </div>
 </div>
 
@@ -856,7 +859,7 @@ let st        = {{}};
 let chipsReady = false;
 let coverTs    = 0;
 
-// ── Page switch ──
+// ── Page Switching ──
 function showPage(id, btn) {{
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -867,32 +870,30 @@ function showPage(id, btn) {{
   if (id==='pg-set'   ) {{ fetchPresets(); fetchDirs(); document.getElementById('srv-url').textContent=location.href; }}
 }}
 
-// ── Time format ──
+// ── Time Format ──
 function fmt(s) {{
   if (!s||isNaN(s)) return '0:00';
   const m=Math.floor(s/60), sec=Math.floor(s%60);
   return m+':'+String(sec).padStart(2,'0');
 }}
 
-// ── Status polling ──
+// ── Status Polling ──
 async function poll() {{
   try {{
     const r = await fetch('/api/status'); st = await r.json();
     updateNP(); updateMini();
     if (!chipsReady) initChips();
-    // Re-render radio list so play/stop button stays in sync
-    if (document.getElementById('pg-radio').classList.contains('active')) renderRadio();
   }} catch(e) {{}}
 }}
 
 function updateNP() {{
   const t = st.current_track;
-  document.getElementById('np-title' ).textContent = t ? (t.title ||'Unknown') : 'Nothing playing';
+  document.getElementById('np-title' ).textContent = t ? (t.title ||'Unknown') : 'No track playing';
   document.getElementById('np-artist').textContent = t ? (t.artist||'-'  ) : '-';
   document.getElementById('np-album' ).textContent = t ? (t.album ||'-'  ) : '-';
   document.getElementById('t-tot'    ).textContent = fmt(t?.duration);
 
-  // Cover art
+  // Cover
   if (st.has_cover) {{
     document.getElementById('cover-icon').style.display='none';
     const img=document.getElementById('cover-img');
@@ -909,9 +910,8 @@ function updateNP() {{
   document.getElementById('prog-fill').style.width = dur>0 ? Math.min(100,(pos/dur)*100)+'%' : '0%';
   document.getElementById('t-cur').textContent = fmt(pos);
 
-  // Buttons
+  // Button
   const icon = (st.paused||!st.playing) ? '▶' : '⏸';
-  // ▶ button: always show ▶, colored when playing, grey when stopped
   const playBtn  = document.getElementById('btn-play');
   const miniPlay = document.getElementById('mini-play');
   if (st.playing) {{
@@ -930,7 +930,7 @@ function updateNP() {{
   document.getElementById('vol-sl' ).value = st.volume||85;
   document.getElementById('vol-val').textContent = st.volume||85;
 
-  // Bass/Treble slider sync
+  // Bass/Treble Slider Sync
   if (st.bass_db   !== undefined) {{ const bv=st.bass_db||0;   document.getElementById('bass-sl').value=bv;   document.getElementById('bass-val').textContent=(bv>0?'+':'')+bv+'dB'; }}
   if (st.treble_db !== undefined) {{ const tv=st.treble_db||0; document.getElementById('treble-sl').value=tv; document.getElementById('treble-val').textContent=(tv>0?'+':'')+tv+'dB'; }}
 }}
@@ -956,7 +956,7 @@ function initChips() {{
   ).join('');
 }}
 
-// ── Controls API ──
+// ── Control API ──
 async function api(action) {{
   await fetch('/api/'+action, {{method:'POST'}});
 }}
@@ -978,7 +978,7 @@ async function setGain(k, el) {{
   await fetch('/api/gain',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{gain_preset:k}})}});
 }}
 
-// ── Bass / Treble tone ──
+// ── Bass/Treble Tone ──
 let _toneTimers = {{}};
 function onTone(type, v) {{
   const sign = v > 0 ? '+' : '';
@@ -1008,7 +1008,7 @@ document.getElementById('prog-bar').addEventListener('click', e => {{
 
 // ── Library ──
 async function doScan() {{
-  document.getElementById('trk-list').innerHTML='<div class="loading">📂 Scanning... please wait</div>';
+  document.getElementById('trk-list').innerHTML='<div class="loading">📂 Scanning... Please wait</div>';
   const r=await fetch('/api/scan',{{method:'POST'}});
   const d=await r.json();
   await fetchTracks();
@@ -1019,13 +1019,13 @@ async function fetchTracks() {{
   renderTrks(allTracks);
 }}
 
-// Return parent directory string from folder path
+// Return parent directory path
 function folderOf(path) {{
   const idx = path.lastIndexOf('/');
   return idx >= 0 ? path.slice(0, idx) : path;
 }}
 
-// Convert allTracks → album array grouped by folder
+// Convert allTracks to albums by folder
 function buildAlbums(tracks) {{
   const map = new Map();
   for (const t of tracks) {{
@@ -1036,12 +1036,11 @@ function buildAlbums(tracks) {{
         name:    t.album  || folder.split('/').pop(),
         artist:  t.artist || '',
         tracks:  [],
-        cover_t: null,   // Representative track for cover art
+        cover_t: null,
       }});
     }}
     const alb = map.get(folder);
     alb.tracks.push(t);
-    // Use first track with cover art as representative
     if (!alb.cover_t && t.has_cover) alb.cover_t = t;
   }}
   return Array.from(map.values());
@@ -1050,7 +1049,6 @@ function buildAlbums(tracks) {{
 function filterTrks() {{
   const q = document.getElementById('srch').value.toLowerCase();
   if (viewMode === 'jacket') {{
-    // Jacket mode: filter by album, artist, folder name, track title
     const base = buildAlbums(allTracks);
     const f = q ? base.filter(a =>
       a.name.toLowerCase().includes(q) ||
@@ -1082,7 +1080,7 @@ function setView(mode) {{
   filterTrks();
 }}
 
-// ── Album grid render (jacket mode) ──
+// ── Album Grid Rendering (Album View) ──
 function renderAlbums(albums) {{
   const el = document.getElementById('trk-list');
   if (!albums.length) {{ el.innerHTML='<div class="empty">No albums found</div>'; return; }}
@@ -1106,7 +1104,6 @@ function renderAlbums(albums) {{
     </div>`;
   }}).join('') + '</div>';
 
-  // Store album array in DOM for playFolder reference
   el._albums = albums;
 }}
 
@@ -1122,7 +1119,7 @@ async function playFolder(ai, el) {{
   }});
 }}
 
-// ── Track list render (list mode) ──
+// ── Track List Rendering (List View) ──
 function renderTrks(list) {{
   const el = document.getElementById('trk-list');
   if (!list.length) {{ el.innerHTML='<div class="empty">No tracks found</div>'; return; }}
@@ -1167,7 +1164,7 @@ function renderRadio() {{
         <div class="ri-name">${{esc(s.name)}}</div>
         <div class="ri-desc">${{esc(s.desc)}}</div>
       </div>
-      <div class="ri-btn" onclick="event.stopPropagation();radioBtn(${{i}})">${{playing?'⏹':'▶'}}</div>
+      <div class="ri-btn">${{playing?'⏸':'▶'}}</div>
     </div>`;
   }}).join('');
 }}
@@ -1176,28 +1173,17 @@ async function playRadio(i) {{
   await fetch('/api/radio/play',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{index:i}})}});
 }}
 
-// Stop if this station is playing, otherwise play it
-async function radioBtn(i) {{
-  const cur = st.current_track?.title || '';
-  const isPlaying = st.radio_mode && st.playing && cur.includes(RADIOS[i].name);
-  if (isPlaying) {{
-    await api('stop');
-  }} else {{
-    await playRadio(i);
-  }}
-}}
-
 // ── Presets ──
 async function fetchPresets() {{
   const r=await fetch('/api/presets'); const p=await r.json();
   const el=document.getElementById('pre-list');
   const keys=Object.keys(p);
-  if (!keys.length) {{ el.innerHTML='<div class="empty">No presets saved yet</div>'; return; }}
+  if (!keys.length) {{ el.innerHTML='<div class="empty">No presets saved</div>'; return; }}
   el.innerHTML=keys.map(k=>{{
     const bass   = p[k].bass_db   || 0;
     const treble = p[k].treble_db || 0;
     const toneStr = (bass !== 0 || treble !== 0)
-      ? ` · Bass${{bass>0?'+':''}}${{bass}}dB Treble${{treble>0?'+':''}}${{treble}}dB`
+      ? ` · Bass ${{bass>0?'+':''}}${{bass}}dB Treble ${{treble>0?'+':''}}${{treble}}dB`
       : '';
     return `<div class="pre-item">
     <div class="pre-name">
@@ -1212,7 +1198,7 @@ async function fetchPresets() {{
 
 async function savePreset() {{
   const n=document.getElementById('pre-nm-in').value.trim();
-  if (!n) {{ alert('Please enter a preset name'); return; }}
+  if (!n) {{ alert('Please enter preset name'); return; }}
   await fetch('/api/presets',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:n}})}});
   document.getElementById('pre-nm-in').value='';
   fetchPresets();
@@ -1224,14 +1210,14 @@ async function loadPreset(n) {{
 }}
 
 async function delPreset(n) {{
-  if (!confirm(n+' — delete this preset?')) return;
+  if (!confirm('Delete preset ' + n + '?')) return;
   await fetch('/api/presets/delete',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:n}})}});
   fetchPresets();
 }}
 
 function esc(s){{ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
 
-// ── Folder management ──
+// ── Folder Management ──
 async function fetchDirs() {{
   try {{
     const r=await fetch('/api/dirs'); const d=await r.json();
@@ -1253,10 +1239,10 @@ async function rescan() {{
   const r=await fetch('/api/scan',{{method:'POST'}}); const d=await r.json();
   document.getElementById('dir-list').innerHTML=d.dirs.map(p=>`<div>📁 ${{esc(p)}}</div>`).join('');
   await fetchTracks();
-  alert(`✅ Loaded ${{d.count}} track(s)`);
+  alert(`✅ Loaded ${{d.count}} tracks`);
 }}
 
-// ── Initialize ──
+// ── Startup ──
 setInterval(poll, 1500);
 poll();
 </script>
@@ -1270,7 +1256,7 @@ HTML = build_html()
 #  Web API Handler
 # ══════════════════════════════════════════════
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass  # suppress logs
+    def log_message(self, *a): pass  # Suppress logging
 
     def _json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -1377,7 +1363,6 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Scan ──
         if p == '/api/scan':
-            # Rebuild MUSIC_DIRS before scan (handles storage permission granted after launch)
             global MUSIC_DIRS
             MUSIC_DIRS = _find_all_music_dirs()
             tracks = scan_music()
@@ -1405,7 +1390,6 @@ class Handler(BaseHTTPRequestHandler):
         elif p == '/api/play':
             if not state['playing']:
                 if state.get('last_radio_mode') and state.get('last_station'):
-                    # Radio was last playing → resume same station
                     threading.Thread(
                         target=play_radio, args=(state['last_station'],), daemon=True
                     ).start()
@@ -1427,7 +1411,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'ok': True})
 
         elif p == '/api/stop':
-            # Save state before stopping
             state['last_radio_mode'] = state.get('radio_mode', False)
             if state['playing'] and not state.get('radio_mode'):
                 try:
@@ -1469,7 +1452,7 @@ class Handler(BaseHTTPRequestHandler):
                     restart_at_position()
             self._json({'gain_preset': preset})
 
-        # ── Bass / Treble tone ──
+        # ── Bass/Treble Tone ──
         elif p == '/api/tone':
             state['bass_db']   = max(-12, min(12, int(data.get('bass_db',   0))))
             state['treble_db'] = max(-12, min(12, int(data.get('treble_db', 0))))
@@ -1499,7 +1482,7 @@ class Handler(BaseHTTPRequestHandler):
                 MUSIC_DIRS.append(d)
                 self._json({'ok': True, 'dirs': MUSIC_DIRS})
             else:
-                self._json({'ok': False, 'reason': 'Folder does not exist or is already registered', 'dirs': MUSIC_DIRS})
+                self._json({'ok': False, 'reason': 'Folder does not exist or already registered', 'dirs': MUSIC_DIRS})
 
         # ── Presets ──
         elif p == '/api/presets':
@@ -1524,10 +1507,10 @@ class Handler(BaseHTTPRequestHandler):
                 p2 = pre[name]
                 state['eq_preset']   = p2.get('eq_preset',   'none')
                 state['gain_preset'] = p2.get('gain_preset', 'classical')
-                state['gain_db']     = p2.get('gain_db',      0)
-                state['bass_db']     = p2.get('bass_db',      0)
-                state['treble_db']   = p2.get('treble_db',    0)
-                state['volume']      = p2.get('volume',       85)
+                state['gain_db']     = p2.get('gain_db',     -3)
+                state['bass_db']     = p2.get('bass_db',     0)
+                state['treble_db']   = p2.get('treble_db',   0)
+                state['volume']      = p2.get('volume',      85)
                 mpv_set('volume', state['volume'])
                 if state['playing'] and not state['radio_mode']:
                     restart_at_position()
@@ -1560,10 +1543,10 @@ def get_local_ip():
 
 def main():
     print('═' * 58)
-    print('🎵  Sonia  for Android (Termux)')
+    print('🎵  Musica Player  Android Edition (Termux)')
     print('═' * 58)
 
-    # Check ffmpeg / mpv
+    # ffmpeg / mpv check
     for cmd in ['ffmpeg', 'mpv']:
         if not shutil.which(cmd):
             print(f'❌  {cmd} not found')
@@ -1573,45 +1556,41 @@ def main():
     print('\n📂 Scanning music library...')
     tracks = scan_music()
     if tracks:
-        print(f'   {len(tracks)} tracks found — loading metadata...')
+        print(f'   Found {len(tracks)} tracks — loading metadata...')
         for i, t in enumerate(tracks):
             get_metadata(t)
             if (i + 1) % 100 == 0:
-                print(f'   {i + 1}/{len(tracks)} done')
+                print(f'   {i + 1}/{len(tracks)} complete')
         with _db_lock:
             state['playlist'] = list(track_db.keys())
-        print(f'✅  {len(tracks)} tracks loaded\n')
+        print(f'✅  Loaded {len(tracks)} tracks\n')
     else:
         print('⚠   No tracks found')
-        print("    ⚠ Check that your Music folder has files")
-    print("    You can verify with: ls ~/storage/")
-    print("")
+        print("    ⚠ Have you run termux-setup-storage?")
+    print("    If done, folders should exist under ~/storage/")
+    print("    In Termux: ls ~/storage/  to check\n")
 
     ip = get_local_ip()
     print(f'🌐  Web server started')
-    print(f'    http://localhost:{WEB_PORT}     ← browser on this device')
-    print(f'    http://{ip}:{WEB_PORT}  ← other devices on same Wi-Fi')
-    print(f'\n    Ctrl+C to quit')
+    print(f'    http://localhost:{WEB_PORT}     ← Browser in Termux')
+    print(f'    http://{ip}:{WEB_PORT}  ← From other devices on same Wi-Fi')
+    print(f'\n    Ctrl+C to exit')
     print('═' * 58)
 
     server = HTTPServer(('0.0.0.0', WEB_PORT), Handler)
-    server.timeout = 1.0  # polling interval for serve_forever
+    server.timeout = 1.0
 
     import signal, sys as _sys
 
     def _shutdown(sig=None, frame=None):
-        """Clean exit on Ctrl+C to prevent terminal freeze"""
+        """Clean shutdown on Ctrl+C"""
         print("\n👋 Shutting down...")
-        # 1. stop mpv
         stop_mpv()
-        # 2. stop playlist thread
         global stop_playlist
         stop_playlist = True
-        # 3. stop HTTP server (called from another thread)
         t = threading.Thread(target=server.shutdown, daemon=True)
         t.start()
         t.join(timeout=3)
-        # 4. reset terminal state
         try:
             import termios, tty
             termios.tcsetattr(_sys.stdin.fileno(), termios.TCSADRAIN,
@@ -1619,13 +1598,12 @@ def main():
         except Exception:
             pass
         os.system("stty sane 2>/dev/null")
-        print("✅ Bye!")
+        print("✅ Closed")
         _sys.exit(0)
 
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # Print scan result to console on startup
     print("\n📋 Scanned folders:")
     for d in MUSIC_DIRS:
         exists = "✅" if os.path.isdir(d) else "❌"
