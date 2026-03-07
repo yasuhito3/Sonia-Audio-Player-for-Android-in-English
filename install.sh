@@ -51,7 +51,7 @@ mkdir -p "$INSTALL_DIR"
 SCRIPT_DST="$INSTALL_DIR/sonia_android.py"
 
 info "Downloading Sonia script..."
-curl -sL "https://raw.githubusercontent.com/yasuhito3/Sonia-for-Android/main/sonia_android.py" \
+curl -sL "https://raw.githubusercontent.com/yasuhito3/Sonia-Audio-Player-for-Android-in-English/main/sonia_android.py" \
     | sed 's/\r//' > "$SCRIPT_DST"
 if [ -s "$SCRIPT_DST" ]; then
     ok "Sonia script downloaded"
