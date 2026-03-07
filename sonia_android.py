@@ -114,8 +114,8 @@ EQ_LABELS = {
 # ══════════════════════════════════════════════
 GAIN_PRESETS = {
     'classical':  0,
-    'jazz_pop':  -2,
-    'loud':      -3,
+    'jazz_pop':  -5,
+    'loud':      -8,
     'quiet':      2,
 }
 GAIN_LABELS = {
