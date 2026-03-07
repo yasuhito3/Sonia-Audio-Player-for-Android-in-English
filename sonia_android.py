@@ -669,7 +669,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .ri-info{{flex:1}}
 .ri-name{{font-size:15px;font-weight:600}}
 .ri-desc{{font-size:12px;color:var(--tx2);margin-top:2px}}
-.ri-btn{{font-size:20px;color:var(--tx2)}}
+.ri-btn{{font-size:24px;color:var(--ac);font-weight:bold;min-width:32px;text-align:center}}
 
 /* ── Presets ── */
 .pre-save{{display:flex;gap:8px;margin-bottom:14px}}
@@ -1165,7 +1165,7 @@ function renderRadio() {{
         <div class="ri-name">${{esc(s.name)}}</div>
         <div class="ri-desc">${{esc(s.desc)}}</div>
       </div>
-      <div class="ri-btn">${{playing?'⏸':'▶'}}</div>
+      <div class="ri-btn" onclick="event.stopPropagation();${{playing}}?api('stop'):playRadio(${{i}})">${{playing?'⏹':'▶'}}</div>
     </div>`;
   }}).join('');
 }}
