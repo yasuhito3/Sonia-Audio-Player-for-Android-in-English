@@ -152,7 +152,7 @@ RADIO_STATIONS = [
     {'name':'Jazz24',              'url':'https://knkx-live-a.edge.audiocdn.com/6285_256k',
      'desc':'NPR Jazz Station - 256kbps Hi-Fi', 'flag':'🇺🇸'},
     {'name':'KJazz 88.1 FM',       'url':'https://streaming.live365.com/a49833',
-     'desc':'Los Angeles Jazz & Blues (since 1981)', 'flag':'����🇸'},
+     'desc':'Los Angeles Jazz & Blues (since 1981)', 'flag':'🇺🇸'},
 ]
 
 # ══════════════════════════════════════════════
