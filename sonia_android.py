@@ -113,16 +113,16 @@ EQ_LABELS = {
 #  Gain Presets (dB)
 # ══════════════════════════════════════════════
 GAIN_PRESETS = {
-    'classical': -3,
-    'jazz_pop':   0,
-    'loud':       3,
-    'quiet':     -6,
+    'classical':  0,
+    'jazz_pop':  -2,
+    'loud':      -3,
+    'quiet':      2,
 }
 GAIN_LABELS = {
-    'classical':'Classical (-3dB)',
-    'jazz_pop': 'Jazz/Pop (0dB)',
-    'loud':     'Loud (+3dB)',
-    'quiet':    'Quiet (-6dB)',
+    'classical':'Classical (0dB)',
+    'jazz_pop': 'Jazz/Pop (-2dB)',
+    'loud':     'Loud (-3dB)',
+    'quiet':    'Quiet (+2dB)',
 }
 
 # ══════════════════════════════════════════════
@@ -163,7 +163,7 @@ state = {
     'volume':        85,
     'eq_preset':      'none',
     'gain_preset':    'classical',
-    'gain_db':        -3,
+    'gain_db':         0,
     'bass_db':        0,
     'treble_db':      0,
     'current_track': None,
@@ -1193,14 +1193,21 @@ async function fetchPresets() {{
   const el=document.getElementById('pre-list');
   const keys=Object.keys(p);
   if (!keys.length) {{ el.innerHTML='<div class="empty">No presets saved yet</div>'; return; }}
-  el.innerHTML=keys.map(k=>`<div class="pre-item">
+  el.innerHTML=keys.map(k=>{{
+    const bass   = p[k].bass_db   || 0;
+    const treble = p[k].treble_db || 0;
+    const toneStr = (bass !== 0 || treble !== 0)
+      ? ` · Bass${{bass>0?'+':''}}${{bass}}dB Treble${{treble>0?'+':''}}${{treble}}dB`
+      : '';
+    return `<div class="pre-item">
     <div class="pre-name">
       <div class="pre-nm">🔖 ${{esc(k)}}</div>
-      <div class="pre-info">EQ: ${{EQ_LABELS[p[k].eq_preset]||p[k].eq_preset}} / ${{GAIN_LABELS[p[k].gain_preset]||p[k].gain_preset}}</div>
+      <div class="pre-info">EQ: ${{EQ_LABELS[p[k].eq_preset]||p[k].eq_preset}} / ${{GAIN_LABELS[p[k].gain_preset]||p[k].gain_preset}}${{toneStr}}</div>
     </div>
     <button class="btn-sm btn-load" onclick="loadPreset('${{esc(k)}}')">Load</button>
     <button class="btn-sm btn-del"  onclick="delPreset('${{esc(k)}}')">Delete</button>
-  </div>`).join('');
+  </div>`;
+  }}).join('');
 }}
 
 async function savePreset() {{
@@ -1503,6 +1510,8 @@ class Handler(BaseHTTPRequestHandler):
                     'eq_preset':   state['eq_preset'],
                     'gain_preset': state['gain_preset'],
                     'gain_db':     state['gain_db'],
+                    'bass_db':     state.get('bass_db',   0),
+                    'treble_db':   state.get('treble_db', 0),
                     'volume':      state['volume'],
                 }
                 save_presets(pre)
@@ -1515,11 +1524,13 @@ class Handler(BaseHTTPRequestHandler):
                 p2 = pre[name]
                 state['eq_preset']   = p2.get('eq_preset',   'none')
                 state['gain_preset'] = p2.get('gain_preset', 'classical')
-                state['gain_db']     = p2.get('gain_db',     -3)
-                state['volume']      = p2.get('volume',      85)
+                state['gain_db']     = p2.get('gain_db',      0)
+                state['bass_db']     = p2.get('bass_db',      0)
+                state['treble_db']   = p2.get('treble_db',    0)
+                state['volume']      = p2.get('volume',       85)
                 mpv_set('volume', state['volume'])
                 if state['playing'] and not state['radio_mode']:
-                    start_playlist(state['playlist'], state['current_index'])
+                    restart_at_position()
             self._json({'ok': True})
 
         elif p == '/api/presets/delete':
