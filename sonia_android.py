@@ -880,6 +880,8 @@ async function poll() {{
     const r = await fetch('/api/status'); st = await r.json();
     updateNP(); updateMini();
     if (!chipsReady) initChips();
+    // Re-render radio list so play/stop button stays in sync
+    if (document.getElementById('pg-radio').classList.contains('active')) renderRadio();
   }} catch(e) {{}}
 }}
 
@@ -1165,13 +1167,24 @@ function renderRadio() {{
         <div class="ri-name">${{esc(s.name)}}</div>
         <div class="ri-desc">${{esc(s.desc)}}</div>
       </div>
-      <div class="ri-btn" onclick="event.stopPropagation();${{playing}}?api('stop'):playRadio(${{i}})">${{playing?'⏹':'▶'}}</div>
+      <div class="ri-btn" onclick="event.stopPropagation();radioBtn(${{i}})">${{playing?'⏹':'▶'}}</div>
     </div>`;
   }}).join('');
 }}
 
 async function playRadio(i) {{
   await fetch('/api/radio/play',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{index:i}})}});
+}}
+
+// Stop if this station is playing, otherwise play it
+async function radioBtn(i) {{
+  const cur = st.current_track?.title || '';
+  const isPlaying = st.radio_mode && st.playing && cur.includes(RADIOS[i].name);
+  if (isPlaying) {{
+    await api('stop');
+  }} else {{
+    await playRadio(i);
+  }}
 }}
 
 // ── Presets ──
