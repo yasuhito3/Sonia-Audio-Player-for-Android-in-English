@@ -586,16 +586,16 @@ def build_html():
   --tx:#eeeef5; --tx2:#888899; --brd:#2a2a38; --red:#ef4444; --grn:#22c55e;
 }}
 *{{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}}
-body{{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh;overscroll-behavior:none}}
+body{{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden;overscroll-behavior:none}}
 
 /* ── Tabs ── */
-.tabs{{display:flex;background:var(--sf);border-bottom:1px solid var(--brd);position:sticky;top:0;z-index:100}}
+.tabs{{display:flex;background:var(--sf);border-bottom:1px solid var(--brd);flex-shrink:0;z-index:100}}
 .tab{{flex:1;padding:13px 2px;text-align:center;font-size:10.5px;color:var(--tx2);cursor:pointer;border:none;background:none;letter-spacing:.03em;transition:color .2s}}
 .tab.active{{color:var(--ac2);box-shadow:inset 0 -2px 0 var(--ac)}}
 
 /* ── Pages ── */
-.page{{display:none;padding:14px 14px 190px}}
-.page.active{{display:block}}
+.page{{display:none;padding:14px 14px 20px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}}
+.page.active{{display:block;flex:1;overflow-y:auto}}
 
 /* ── Now Playing card ── */
 .np-card{{background:var(--sf);border-radius:18px;padding:22px 18px;text-align:center;margin-bottom:14px}}
@@ -693,7 +693,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 .btn-full.ghost{{background:var(--sf2);color:var(--ac2)}}
 
 /* ── Mini player ── */
-.mini{{position:fixed;bottom:0;left:0;right:0;background:rgba(23,23,31,.97);backdrop-filter:blur(12px);border-top:1px solid var(--brd);padding:10px 14px 22px;display:flex;align-items:center;gap:11px;z-index:200}}
+.mini{{flex-shrink:0;background:rgba(23,23,31,.97);border-top:1px solid var(--brd);padding:10px 14px 22px;display:flex;align-items:center;gap:11px;z-index:200}}
 .mini-cov{{width:50px;height:50px;border-radius:9px;background:var(--sf2);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:26px;overflow:hidden}}
 .mini-cov img{{width:100%;height:100%;object-fit:cover}}
 .mini-info{{flex:1;min-width:0}}
