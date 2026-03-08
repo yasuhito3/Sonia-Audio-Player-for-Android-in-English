@@ -378,6 +378,8 @@ def build_af(eq_preset, gain_db):
     treble = state.get('treble_db', 0)
     if treble != 0:
         filters.append(f'treble=g={treble}:f=8000')
+    # ── Peak clipping prevention (limit to 0.98 dBFS after EQ/bass/treble) ──
+    filters.append('alimiter=level_in=1.0:level_out=1.0:limit=0.98:attack=5:release=50')
     return ','.join(filters)
 
 # ══════════════════════════════════════════════
