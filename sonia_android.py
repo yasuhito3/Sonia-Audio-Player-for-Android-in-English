@@ -117,13 +117,13 @@ EQ_LABELS = {
 #  Gain Presets (dB)
 # ══════════════════════════════════════════════
 GAIN_PRESETS = {
-    'classical':  0,
+    'classical': -3,
     'jazz_pop':  -4,
     'loud':      -6,
     'quiet':      2
 }
 GAIN_LABELS = {
-    'classical':'Classical (0dB)',
+    'classical':'Classical (-3dB)',
     'jazz_pop': 'Jazz/Pop (-4dB)',
     'loud':     'Loud (-6dB)',
     'quiet':    'Quiet (+2dB)',
@@ -366,9 +366,17 @@ def mpv_set(prop, val):
 # ═══════════════════════════��══════════════════
 def build_af(eq_preset, gain_db):
     """Generate ffmpeg -af string (gain + EQ + bass/treble tone)"""
-    freqs   = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-    bands   = EQ_PRESETS.get(eq_preset, EQ_PRESETS['none'])
-    filters = [f'volume={gain_db}dB']
+    freqs = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    bands = EQ_PRESETS.get(eq_preset, EQ_PRESETS['none'])
+
+    # ── Android DAC distortion prevention: subtract max EQ boost upfront for headroom ──
+    max_eq_boost  = max((g for g in bands if g > 0), default=0)
+    bass_boost    = max(state.get('bass_db',   0), 0)
+    treble_boost  = max(state.get('treble_db', 0), 0)
+    total_boost   = max_eq_boost + bass_boost + treble_boost
+    pre_volume_db = gain_db - total_boost  # pull down before EQ so output never exceeds 0 dBFS
+
+    filters = [f'volume={pre_volume_db:.1f}dB']
     for f, g in zip(freqs, bands):
         if g != 0:
             filters.append(f'equalizer=f={f}:width_type=o:width=2:g={g}')
@@ -378,8 +386,9 @@ def build_af(eq_preset, gain_db):
     treble = state.get('treble_db', 0)
     if treble != 0:
         filters.append(f'treble=g={treble}:f=8000')
-    # ── Peak clipping prevention (limit to 0.98 dBFS after EQ/bass/treble) ──
-    filters.append('alimiter=level_in=1.0:level_out=1.0:limit=0.98:attack=5:release=50')
+    # ── ★ Android DAC limiter: limit=0.89 (-1 dBFS) prevents hardware clipping on budget phones ──
+    # limit=0.98 (≈0 dBFS) is too close to the ceiling for Android DACs and causes physical distortion
+    filters.append('alimiter=level_in=1.0:level_out=0.89:limit=0.89:attack=5:release=50')
     return ','.join(filters)
 
 # ══════════════════════════════════════════════
