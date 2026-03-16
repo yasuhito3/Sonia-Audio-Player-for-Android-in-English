@@ -11,12 +11,14 @@ Android Beginner Version of Xubuntu24 Edition (musicaplayerg26x.py)
   - ffmpeg → mpv pipe (EQ/Gain processing, no middleware)
   - EQ/Gain preset management
   - Internet radio playback
+  - YouTube / SoundCloud stream search & playback (yt-dlp)
+  - Stream playlist with queue management
   - Album cover display
   - Mobile-optimized Web Browser UI
 
 【Setup (Termux)】
   pkg update && pkg upgrade
-  pkg install python ffmpeg mpv
+  pkg install python ffmpeg mpv yt-dlp
   pip install mutagen
 
   # Grant /sdcard access (first time only)
@@ -117,13 +119,13 @@ EQ_LABELS = {
 #  Gain Presets (dB)
 # ══════════════════════════════════════════════
 GAIN_PRESETS = {
-    'classical': -3,
+    'classical':  0,
     'jazz_pop':  -4,
     'loud':      -6,
     'quiet':      2
 }
 GAIN_LABELS = {
-    'classical':'Classical (-3dB)',
+    'classical':'Classical (0dB)',
     'jazz_pop': 'Jazz/Pop (-4dB)',
     'loud':     'Loud (-6dB)',
     'quiet':    'Quiet (+2dB)',
@@ -174,9 +176,10 @@ state = {
     'cover_path':    None,
     '_skip_next':    False,
     '_skip_prev':    False,
-    'last_station':   None,   # Last played radio station
-    'last_radio_mode': False, # Was radio playing before stop
-    'last_position':  0,      # Last playback position (seconds)
+    'last_station':    None,   # Last played radio station
+    'last_radio_mode': False,  # Was radio playing before stop
+    'last_stream_mode': False, # Was stream playing before stop
+    'last_position':   0,      # Last playback position (seconds)
 }
 
 mpv_proc        = None
@@ -185,6 +188,10 @@ stop_playlist   = False
 track_db        = {}   # path → metadata dict
 cover_cache     = {}   # path → cover tmp path
 _db_lock        = threading.Lock()
+
+# Stream playlist globals
+stream_pl_thread = None
+stop_stream_pl   = False
 
 # ══════════════════════════════════════════════
 #  Metadata & Cover Art Retrieval
@@ -366,17 +373,9 @@ def mpv_set(prop, val):
 # ═══════════════════════════��══════════════════
 def build_af(eq_preset, gain_db):
     """Generate ffmpeg -af string (gain + EQ + bass/treble tone)"""
-    freqs = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-    bands = EQ_PRESETS.get(eq_preset, EQ_PRESETS['none'])
-
-    # ── Android DAC distortion prevention: subtract max EQ boost upfront for headroom ──
-    max_eq_boost  = max((g for g in bands if g > 0), default=0)
-    bass_boost    = max(state.get('bass_db',   0), 0)
-    treble_boost  = max(state.get('treble_db', 0), 0)
-    total_boost   = max_eq_boost + bass_boost + treble_boost
-    pre_volume_db = gain_db - total_boost  # pull down before EQ so output never exceeds 0 dBFS
-
-    filters = [f'volume={pre_volume_db:.1f}dB']
+    freqs   = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    bands   = EQ_PRESETS.get(eq_preset, EQ_PRESETS['none'])
+    filters = [f'volume={gain_db}dB']
     for f, g in zip(freqs, bands):
         if g != 0:
             filters.append(f'equalizer=f={f}:width_type=o:width=2:g={g}')
@@ -386,14 +385,151 @@ def build_af(eq_preset, gain_db):
     treble = state.get('treble_db', 0)
     if treble != 0:
         filters.append(f'treble=g={treble}:f=8000')
-    # ── ★ Android DAC limiter: limit=0.89 (-1 dBFS) prevents hardware clipping on budget phones ──
-    # limit=0.98 (≈0 dBFS) is too close to the ceiling for Android DACs and causes physical distortion
-    filters.append('alimiter=level_in=1.0:level_out=0.89:limit=0.89:attack=5:release=50')
+    # ── Peak clipping prevention (limit to 0.98 dBFS after EQ/bass/treble) ──
+    filters.append('alimiter=level_in=1.0:level_out=1.0:limit=0.98:attack=5:release=50')
     return ','.join(filters)
+
+# ══════════════════════════════════════════════
+#  Stream Search & Playback (yt-dlp)
+# ══════════════════════════════════════════════
+import shutil as _shutil
+
+def _ytdlp_available():
+    return _shutil.which('yt-dlp') is not None
+
+
+def search_stream(query, source='youtube', max_results=8):
+    if not _ytdlp_available():
+        return {'error': 'yt-dlp not found. Run: pkg install yt-dlp'}
+    prefix = 'ytsearch' if source == 'youtube' else 'scsearch'
+    cmd = [
+        'yt-dlp', '--no-playlist', '--flat-playlist', '-j',
+        '--no-warnings', '--ignore-errors',
+        f'{prefix}{max_results}:{query}',
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        items = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = json.loads(line)
+                items.append({
+                    'id':        info.get('id', ''),
+                    'url':       info.get('url') or info.get('webpage_url', ''),
+                    'title':     info.get('title', 'Unknown'),
+                    'uploader':  info.get('uploader') or info.get('channel', ''),
+                    'duration':  int(info.get('duration') or 0),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'source':    source,
+                })
+            except Exception:
+                continue
+        return {'results': items}
+    except subprocess.TimeoutExpired:
+        return {'error': 'Search timeout (20s)'}
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def resolve_and_play_stream(video_url, title='', artist='', duration=0, thumbnail='', _internal=False):
+    global mpv_proc
+    if _internal:
+        stop_mpv()   # Inside PL thread: don't touch stop_stream_pl
+    else:
+        stop_all()   # External call: stop everything
+    if not _ytdlp_available():
+        print('❌ yt-dlp not found')
+        return None
+    try:
+        r = subprocess.run(
+            ['yt-dlp', '-f', 'bestaudio', '--get-url', '--no-warnings', video_url],
+            capture_output=True, text=True, timeout=15
+        )
+        stream_url = r.stdout.strip().splitlines()[0]
+        if not stream_url:
+            return None
+    except Exception as e:
+        print(f'❌ resolve error: {e}')
+        return None
+
+    af = build_af(state['eq_preset'], state['gain_db'])
+    try:
+        ff  = subprocess.Popen(
+            ['ffmpeg', '-hide_banner', '-loglevel', 'quiet', '-i', stream_url, '-af', af, '-f', 'wav', '-'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        mpv = subprocess.Popen(
+            ['mpv', '--no-video', '--really-quiet',
+             f'--input-ipc-server={MPV_SOCKET}',
+             f'--volume={state["volume"]}', '--audio-buffer=0.5', '-'],
+            stdin=ff.stdout, stderr=subprocess.DEVNULL)
+        ff.stdout.close()
+        mpv_proc = mpv
+        state['playing']          = True
+        state['paused']           = False
+        state['radio_mode']        = True
+        state['last_radio_mode']   = True
+        state['last_stream_mode']  = True
+        state['current_track']     = {
+            'path': video_url, 'title': title or video_url,
+            'artist': artist, 'album': '🎬 Stream', 'duration': duration,
+        }
+        state['cover_path'] = thumbnail if thumbnail else None
+        return mpv
+    except Exception as e:
+        print(f'❌ Stream playback error: {e}')
+        return None
+
+
+def _stream_pl_runner(items):
+    global stop_stream_pl
+    stop_stream_pl = False
+    idx = 0
+    while not stop_stream_pl and idx < len(items):
+        item = items[idx]
+        proc = resolve_and_play_stream(
+            item['url'], item.get('title',''), item.get('artist',''),
+            item.get('duration',0), item.get('thumbnail',''), _internal=True)
+        if proc is None:
+            idx += 1
+            continue
+        while proc.poll() is None and not stop_stream_pl:
+            if state.get('_skip_next'):
+                state['_skip_next'] = False
+                stop_mpv(); break
+            if state.get('_skip_prev'):
+                state['_skip_prev'] = False
+                idx = max(0, idx - 2)
+                stop_mpv(); break
+            time.sleep(0.4)
+        idx += 1
+    if not stop_stream_pl:
+        state['playing'] = False
+
+def start_stream_playlist(items):
+    global stream_pl_thread, stop_stream_pl, stop_playlist
+    stop_playlist  = True   # Stop local PL thread too
+    stop_stream_pl = True
+    stop_mpv()
+    if stream_pl_thread and stream_pl_thread.is_alive():
+        stream_pl_thread.join(timeout=5)
+    stop_stream_pl   = False
+    stream_pl_thread = threading.Thread(target=_stream_pl_runner, args=(list(items),), daemon=True)
+    stream_pl_thread.start()
 
 # ══════════════════════════════════════════════
 #  Playback Engine
 # ══════════════════════════════════════════════
+def stop_all():
+    """Stop all playback (local / radio / stream PL)"""
+    global stop_playlist, stop_stream_pl
+    stop_playlist  = True
+    stop_stream_pl = True
+    stop_mpv()
+
+
 def stop_mpv():
     global mpv_proc
     mpv_send(['quit'])
@@ -405,6 +541,12 @@ def stop_mpv():
         except Exception:
             mpv_proc.kill()
     mpv_proc = None
+    # Kill any remaining mpv/ffmpeg processes
+    try:
+        subprocess.run(['pkill', '-x', 'mpv'],   stderr=subprocess.DEVNULL)
+        subprocess.run(['pkill', '-x', 'ffmpeg'], stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
     state['playing'] = False
     state['paused']  = False
 
@@ -412,7 +554,7 @@ def stop_mpv():
 def play_track(path):
     """Play one track via ffmpeg → mpv pipe (blocking)"""
     global mpv_proc
-    stop_mpv()
+    stop_all()
 
     af = build_af(state['eq_preset'], state['gain_db'])
 
@@ -549,8 +691,9 @@ def restart_at_position():
 
 
 def start_playlist(playlist, index=0, seek=0):
-    global playlist_thread, stop_playlist
-    stop_playlist = True
+    global playlist_thread, stop_playlist, stop_stream_pl
+    stop_playlist  = True
+    stop_stream_pl = True   # Also stop stream PL
     if playlist_thread and playlist_thread.is_alive():
         playlist_thread.join(timeout=4)
 
@@ -734,6 +877,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
   <button class="tab active" onclick="showPage('pg-now',this)">▶ NOW</button>
   <button class="tab" onclick="showPage('pg-lib',this)">🎵 MUSIC</button>
   <button class="tab" onclick="showPage('pg-radio',this)">📻 RADIO</button>
+  <button class="tab" onclick="showPage('pg-stream',this)">📡 STREAM</button>
   <button class="tab" onclick="showPage('pg-set',this)">⚙ SET</button>
 </div>
 
@@ -812,6 +956,47 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
 <div id="pg-radio" class="page">
   <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
   <div id="radio-list"></div>
+</div>
+
+<!-- ── Stream ── -->
+<div id="pg-stream" class="page">
+  <div class="xubuntu-banner">🎶 <a href="https://sites.google.com/view/aimusicplayer-sonia/" target="_blank">Upgrade to Xubuntu24 Edition for Higher Quality & More Features!</a></div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button id="btn-yt" onclick="setStreamSource('youtube')"
+      style="flex:1;padding:11px 0;border-radius:11px;border:1px solid var(--ac);background:var(--ac);color:#fff;font-size:13px;font-weight:700;cursor:pointer">
+      &#9654; YouTube
+    </button>
+    <button id="btn-sc" onclick="setStreamSource('soundcloud')"
+      style="flex:1;padding:11px 0;border-radius:11px;border:1px solid var(--brd);background:var(--sf2);color:var(--tx2);font-size:13px;font-weight:700;cursor:pointer">
+      &#9729; SoundCloud
+    </button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <input id="stream-query" type="search" placeholder="Track name, artist..."
+      class="srch" style="margin-bottom:0;flex:1"
+      onkeydown="if(event.key==='Enter')searchStream()">
+    <button onclick="searchStream()"
+      style="padding:11px 16px;background:var(--ac);color:#fff;border:none;border-radius:11px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0">
+      Search
+    </button>
+  </div>
+  <div id="stream-results"><div class="empty">Search by track name or artist<br><span style="font-size:12px">Tap &#xFF0B; to add to playlist</span></div></div>
+</div>
+
+<!-- ── Stream Playlist Bar ── -->
+<div id="pl-bar" style="display:none;position:fixed;bottom:72px;left:0;right:0;z-index:190;background:rgba(124,106,247,.97);padding:0 14px;border-top:1px solid rgba(255,255,255,.15)">
+  <div onclick="togglePlPanel()" style="display:flex;align-items:center;gap:10px;padding:11px 0;cursor:pointer">
+    <span style="font-size:18px">&#127925;</span>
+    <span id="pl-bar-label" style="flex:1;font-size:13px;font-weight:700;color:#fff">Playlist 0 tracks</span>
+    <button onclick="event.stopPropagation();clearStreamPlaylist()"
+      style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer">Clear</button>
+    <button onclick="event.stopPropagation();playStreamPlaylist()"
+      style="background:#fff;border:none;color:var(--ac);border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer">&#9654; Play</button>
+    <span id="pl-arrow" style="color:#fff;font-size:14px">&#9650;</span>
+  </div>
+  <div id="pl-panel" style="display:none;max-height:240px;overflow-y:auto;padding-bottom:10px">
+    <div id="pl-items"></div>
+  </div>
 </div>
 
 <!-- ── Settings ── -->
@@ -1253,6 +1438,174 @@ async function rescan() {{
   alert(`✅ Loaded ${{d.count}} tracks`);
 }}
 
+// ── Stream Search / Playback / Playlist ──
+var streamSource   = 'youtube';
+var streamPlaylist = [];
+var _lastResults   = [];
+var plPanelOpen    = false;
+
+function setStreamSource(src) {{
+  streamSource = src;
+  var ytBtn = document.getElementById('btn-yt');
+  var scBtn = document.getElementById('btn-sc');
+  if (src === 'youtube') {{
+    ytBtn.style.background = 'var(--ac)'; ytBtn.style.borderColor = 'var(--ac)'; ytBtn.style.color = '#fff';
+    scBtn.style.background = 'var(--sf2)'; scBtn.style.borderColor = 'var(--brd)'; scBtn.style.color = 'var(--tx2)';
+  }} else {{
+    scBtn.style.background = 'var(--ac)'; scBtn.style.borderColor = 'var(--ac)'; scBtn.style.color = '#fff';
+    ytBtn.style.background = 'var(--sf2)'; ytBtn.style.borderColor = 'var(--brd)'; ytBtn.style.color = 'var(--tx2)';
+  }}
+}}
+
+async function searchStream() {{
+  var q = document.getElementById('stream-query').value.trim();
+  if (!q) return;
+  var resDiv = document.getElementById('stream-results');
+  resDiv.innerHTML = '<div class="loading">Searching... (may take a few seconds)</div>';
+  try {{
+    var r = await fetch('/api/stream/search', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{query: q, source: streamSource}})
+    }});
+    var data = await r.json();
+    if (data.error) {{
+      resDiv.innerHTML = '<div style="color:var(--red);padding:14px;text-align:center">' + esc(data.error) + '</div>';
+      return;
+    }}
+    if (!data.results || data.results.length === 0) {{
+      resDiv.innerHTML = '<div class="empty">No results found</div>';
+      return;
+    }}
+    _lastResults = data.results;
+    renderStreamResults();
+  }} catch(e) {{
+    resDiv.innerHTML = '<div style="color:var(--red);padding:14px;text-align:center">Error: ' + esc(String(e)) + '</div>';
+  }}
+}}
+
+function renderStreamResults() {{
+  var resDiv = document.getElementById('stream-results');
+  if (!resDiv) return;
+  var inPl = {{}};
+  for (var k = 0; k < streamPlaylist.length; k++) inPl[streamPlaylist[k].url] = true;
+  var html = '';
+  for (var i = 0; i < _lastResults.length; i++) {{
+    var item  = _lastResults[i];
+    var dur   = item.duration ? fmt(item.duration) : '--:--';
+    var added = !!inPl[item.url];
+    var thumbHtml = item.thumbnail
+      ? '<img src="' + esc(item.thumbnail) + '" style="width:60px;height:44px;object-fit:cover;border-radius:7px;flex-shrink:0" loading="lazy">'
+      : '<div style="width:60px;height:44px;background:var(--sf2);border-radius:7px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:22px">&#127925;</div>';
+    html += '<div class="trk" style="border-radius:11px;background:var(--sf);margin-bottom:6px;gap:8px" onclick="playStreamIdx(' + i + ')">'
+      + thumbHtml
+      + '<div class="ti-info">'
+      + '<div class="ti-title">' + esc(item.title) + '</div>'
+      + '<div class="ti-sub">' + esc(item.uploader || '') + ' &middot; ' + dur + '</div>'
+      + '</div>'
+      + '<button id="plbtn-' + i + '" onclick="event.stopPropagation();toggleStreamPlIdx(' + i + ')"'
+      + ' style="background:' + (added ? 'var(--grn)' : 'var(--sf2)') + ';'
+      + 'border:1.5px solid ' + (added ? 'var(--grn)' : 'var(--brd)') + ';'
+      + 'color:' + (added ? '#fff' : 'var(--ac2)') + ';'
+      + 'border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;flex-shrink:0;'
+      + 'display:flex;align-items:center;justify-content:center;font-weight:700;line-height:1">'
+      + (added ? '&#10003;' : '&#xFF0B;')
+      + '</button>'
+      + '</div>';
+  }}
+  resDiv.innerHTML = html;
+}}
+
+async function playStreamIdx(i) {{
+  var item = _lastResults[i];
+  if (!item) return;
+  document.getElementById('mini-title').textContent = item.title || 'Loading...';
+  document.getElementById('mini-sub').textContent   = item.uploader || '';
+  await fetch('/api/stream/play', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{url: item.url, title: item.title,
+      artist: item.uploader || '', duration: item.duration || 0, thumbnail: item.thumbnail || ''}})
+  }});
+  showPage('pg-now', document.querySelector('.tab'));
+}}
+
+function toggleStreamPlIdx(i) {{
+  var item = _lastResults[i];
+  if (!item) return;
+  var idx = -1;
+  for (var j = 0; j < streamPlaylist.length; j++) {{
+    if (streamPlaylist[j].url === item.url) {{ idx = j; break; }}
+  }}
+  if (idx === -1) {{ streamPlaylist.push(item); }} else {{ streamPlaylist.splice(idx, 1); }}
+  updatePlBar();
+  var btn   = document.getElementById('plbtn-' + i);
+  var added = (idx === -1);
+  if (btn) {{
+    btn.style.background  = added ? 'var(--grn)' : 'var(--sf2)';
+    btn.style.borderColor = added ? 'var(--grn)' : 'var(--brd)';
+    btn.style.color       = added ? '#fff'       : 'var(--ac2)';
+    btn.innerHTML         = added ? '&#10003;' : '&#xFF0B;';
+  }}
+}}
+
+function updatePlBar() {{
+  var bar = document.getElementById('pl-bar');
+  var n   = streamPlaylist.length;
+  if (n === 0) {{ bar.style.display = 'none'; return; }}
+  bar.style.display = 'block';
+  document.getElementById('pl-bar-label').textContent = 'Playlist ' + n + (n === 1 ? ' track' : ' tracks');
+  if (plPanelOpen) renderPlItems();
+}}
+
+function renderPlItems() {{
+  var el   = document.getElementById('pl-items');
+  var html = '';
+  for (var i = 0; i < streamPlaylist.length; i++) {{
+    var item = streamPlaylist[i];
+    var dur  = item.duration ? fmt(item.duration) : '--:--';
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.1)">'
+      + '<span style="color:rgba(255,255,255,.5);font-size:12px;width:18px;text-align:center;flex-shrink:0">' + (i+1) + '</span>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:13px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.title) + '</div>'
+      + '<div style="font-size:11px;color:rgba(255,255,255,.6)">' + esc(item.uploader || '') + ' &middot; ' + dur + '</div>'
+      + '</div>'
+      + '<button onclick="removePlItem(' + i + ')" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:6px;padding:5px 9px;font-size:13px;cursor:pointer;flex-shrink:0">&#x2715;</button>'
+      + '</div>';
+  }}
+  el.innerHTML = html;
+}}
+
+function removePlItem(i) {{
+  streamPlaylist.splice(i, 1);
+  updatePlBar();
+  renderStreamResults();
+}}
+
+function clearStreamPlaylist() {{
+  streamPlaylist = [];
+  updatePlBar();
+  renderStreamResults();
+}}
+
+function togglePlPanel() {{
+  plPanelOpen = !plPanelOpen;
+  document.getElementById('pl-panel').style.display = plPanelOpen ? 'block' : 'none';
+  document.getElementById('pl-arrow').textContent   = plPanelOpen ? '\u25BC' : '\u25B2';
+  if (plPanelOpen) renderPlItems();
+}}
+
+async function playStreamPlaylist() {{
+  if (!streamPlaylist.length) return;
+  await fetch('/api/stream/playlist/play', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{items: streamPlaylist}})
+  }});
+  showPage('pg-now', document.querySelector('.tab'));
+  if (plPanelOpen) togglePlPanel();
+}}
+
 // ── Startup ──
 setInterval(poll, 1500);
 poll();
@@ -1422,7 +1775,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'ok': True})
 
         elif p == '/api/stop':
-            state['last_radio_mode'] = state.get('radio_mode', False)
+            state['last_radio_mode']  = state.get('radio_mode', False)
+            state['last_stream_mode'] = state.get('last_stream_mode', False)
             if state['playing'] and not state.get('radio_mode'):
                 try:
                     v = mpv_get('time-pos')
@@ -1430,7 +1784,9 @@ class Handler(BaseHTTPRequestHandler):
                         state['last_position'] = float(v)
                 except Exception:
                     pass
-            stop_playlist = True
+            global stop_stream_pl
+            stop_playlist   = True
+            stop_stream_pl  = True
             stop_mpv()
             state['playing']       = False
             state['current_track'] = None
@@ -1485,6 +1841,40 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(
                     target=play_radio, args=(RADIO_STATIONS[idx],), daemon=True
                 ).start()
+            self._json({'ok': True})
+
+        # ── Stream Search ──
+        elif p == '/api/stream/search':
+            query  = data.get('query', '').strip()
+            source = data.get('source', 'youtube')
+            if not query:
+                self._json({'error': 'Query is empty'}); return
+            result_box = [None]
+            def _search():
+                result_box[0] = search_stream(query, source)
+            t = threading.Thread(target=_search, daemon=True)
+            t.start(); t.join(timeout=25)
+            self._json(result_box[0] if result_box[0] else {'error': 'Search timeout'})
+
+        # ── Stream single track play ──
+        elif p == '/api/stream/play':
+            url = data.get('url', '')
+            if not url:
+                self._json({'ok': False}); return
+            threading.Thread(
+                target=resolve_and_play_stream,
+                args=(url, data.get('title',''), data.get('artist',''),
+                      int(data.get('duration', 0)), data.get('thumbnail','')),
+                daemon=True).start()
+            self._json({'ok': True})
+
+        # ── Stream playlist play ──
+        elif p == '/api/stream/playlist/play':
+            items = data.get('items', [])
+            if not items:
+                self._json({'ok': False}); return
+            stop_mpv()
+            start_stream_playlist(items)
             self._json({'ok': True})
 
         elif p == '/api/dirs/add':
@@ -1557,11 +1947,14 @@ def main():
     print('🎵  Musica Player  Android Edition (Termux)')
     print('═' * 58)
 
-    # ffmpeg / mpv check
-    for cmd in ['ffmpeg', 'mpv']:
+    # ffmpeg / mpv / yt-dlp check
+    for cmd in ['ffmpeg', 'mpv', 'yt-dlp']:
         if not shutil.which(cmd):
             print(f'❌  {cmd} not found')
-            print(f'   → pkg install {cmd}')
+            if cmd == 'yt-dlp':
+                print(f'   → pkg install yt-dlp  (needed for YouTube/SoundCloud)')
+            else:
+                print(f'   → pkg install {cmd}')
 
     # Initial scan
     print('\n📂 Scanning music library...')
