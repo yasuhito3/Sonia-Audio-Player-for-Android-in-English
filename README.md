@@ -1,176 +1,109 @@
-# 🎵 Sonia Audio Player for Android
+# 🎵 Sonia / Musica Player for Android (Termux)
 
-A mobile music player running on **Android + Termux**, featuring a browser-based UI with 10-band EQ, bass/treble tone controls, album art display, internet radio streaming, and preset saving.
-
-Powered by **Python · ffmpeg · mpv** — no middleware, no app store, no ads.
-
-![Platform](https://img.shields.io/badge/platform-Android%20%2B%20Termux-brightgreen)
-![Python](https://img.shields.io/badge/python-3.x-blue)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+A mobile music player running on Android's Termux, operated via a web browser.  
+Features EQ processing through an ffmpeg → mpv pipeline, plus streaming playback from YouTube and SoundCloud.
 
 ---
 
-## ✨ Features
+## Features
 
-- 🎚️ **10-band EQ** with presets (Flat, Classical, Jazz, Rock, Pop, Bass Boost, Treble Boost, Vocal, Tinnitus Relief)
-- 🔉 **Bass / Treble** tone sliders
-- 🔊 **Gain presets** (Classical, Jazz/Pop, Loud, Quiet)
-- 💾 **Save / Load presets** — store your favourite EQ + tone + gain combinations
-- 🖼️ **Album art** display (embedded tags + folder images)
-- 📻 **Internet radio** streaming (Classic FM, Jazz24, Capital FM and more)
-- 📱 **Mobile-optimized browser UI** — works on any device on the same Wi-Fi
-- 🔀 Shuffle, seek, track list & jacket grid views
-- 🔁 Resumes playback from where you left off
-
----
-
-## 📋 Requirements
-
-- Android smartphone or tablet
-- [Termux](https://f-droid.org/packages/com.termux/) installed via **F-Droid** *(not Google Play)*
-- Internet connection for installation
+- Local music file playback from `/sdcard/Music` (FLAC / WAV / MP3 / M4A / OGG and more)
+- EQ and gain processing via ffmpeg → mpv pipe (no middleware)
+- 10-band EQ presets (Classical, Jazz, Tinnitus Relief, etc.)
+- Bass / Treble sliders (±12 dB)
+- Gain preset management
+- **YouTube / SoundCloud stream playback** (via yt-dlp — full EQ chain applied)
+- **Stream playlist** (add tracks with ＋ button, then play continuously)
+- Internet radio (Classic FM, Jazz24, and 8 more stations)
+- Album art display (embedded tags, folder images, YouTube thumbnails)
+- Mobile-optimised web browser UI
+- Accessible from other devices on the same Wi-Fi
 
 ---
 
-## 🚀 Installation
+## Setup
 
-### One-line install (recommended)
-
-Open **Termux** and paste:
+### Required packages
 
 ```bash
-curl -sL https://raw.githubusercontent.com/yasuhito3/Sonia-Audio-Player-for-Android-in-English/main/install.sh | bash
-```
-
-The installer will automatically:
-1. Update Termux packages
-2. Install `python`, `ffmpeg`, `mpv`
-3. Install the `mutagen` Python library
-4. Download `sonia_android.py`
-5. Create the `sonia` launch command
-6. Create a Termux:Widget shortcut (if Termux:Widget is installed)
-7. Launch Sonia automatically
-
----
-
-## 🎵 How to Use
-
-### Start Sonia
-
-```bash
-sonia
-```
-
-Then open your browser and go to:
-
-```
-http://localhost:8080
-```
-
-From other devices on the same Wi-Fi, use:
-
-```
-http://<your-phone-IP>:8080
-```
-
-### Stop Sonia
-
-Press **Ctrl+C** in Termux.
-
----
-
-## 🎧 Music Files
-
-Put your music files in the **internal storage Music folder** of your Android device.
-
-Supported formats: `mp3 · flac · m4a · wav · aac · ogg · opus · wma`
-
-> Tip: Organising files into album folders enables automatic album recognition and jacket view.
-
----
-
-## 📡 Internet Radio
-
-Sonia includes 10 preset stations:
-
-| Station | Genre | Country |
-|---------|-------|---------|
-| Classic FM | Classical | 🇬🇧 |
-| Classic FM Calm | Relaxing Classical | 🇬🇧 |
-| Classic FM Movies | Film Music | 🇬🇧 |
-| Radio X Classic Rock | Classic Rock | 🇬🇧 |
-| Capital FM | Pop / Top 40 | 🇬🇧 |
-| Heart | Adult Contemporary | 🇬🇧 |
-| Capital Xtra | Hip-hop / R&B | 🇬🇧 |
-| Smooth Radio | Smooth R&B / Soul | 🇬🇧 |
-| Jazz24 | Jazz (256kbps) | 🇺🇸 |
-| KJazz 88.1 FM | Jazz & Blues | 🇺🇸 |
-
----
-
-## 🔧 Manual Installation
-
-If you prefer to install manually:
-
-```bash
-# 1. Install packages
-pkg update && pkg upgrade -y
-pkg install python ffmpeg mpv
+pkg update && pkg upgrade
+pkg install python ffmpeg mpv yt-dlp
 pip install mutagen
-
-# 2. Download the script
-curl -sL https://raw.githubusercontent.com/yasuhito3/Sonia-Audio-Player-for-Android-in-English/main/sonia_android.py -o ~/sonia_android.py
-
-# 3. Create launch command
-cat > $PREFIX/bin/sonia << 'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-python ~/sonia_android.py
-EOF
-chmod +x $PREFIX/bin/sonia
-
-# 4. Launch
-sonia
 ```
 
----
-
-## 📲 Termux:Widget Shortcut (optional)
-
-To launch Sonia with one tap from your home screen:
-
-1. Install **Termux:Widget** from F-Droid
-2. Run the following in Termux:
+### Grant storage access (first time only)
 
 ```bash
-mkdir -p ~/.shortcuts
-cat > ~/.shortcuts/Sonia << 'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-sonia
-EOF
-chmod +x ~/.shortcuts/Sonia
+termux-setup-storage
 ```
 
-3. Long-press your home screen → **Widgets** → **Termux:Widget** → select **Sonia**
+### Launch
+
+```bash
+python musicaplayer_android.py
+```
+
+Open `http://localhost:8080` in your browser.  
+From another device on the same Wi-Fi: `http://<TermuxIP>:8080`
 
 ---
 
-## 🗂️ Files
+## Tab Overview
 
-| File | Description |
-|------|-------------|
-| `sonia_android.py` | Main player script |
-| `install.sh` | Auto-installer |
-
----
-
-## 🙏 Credits
-
-- Built with [Python](https://www.python.org/), [ffmpeg](https://ffmpeg.org/), [mpv](https://mpv.io/), [mutagen](https://mutagen.readthedocs.io/)
-- Runs on [Termux](https://termux.dev/)
-- Powered by [Claude](https://claude.ai) (Anthropic)
+| Tab | Content |
+|-----|---------|
+| **NOW** | Currently playing info, transport controls, EQ & gain |
+| **MUSIC** | Local music library (list view / jacket grid) |
+| **RADIO** | Internet radio station list |
+| **STREAM** | YouTube / SoundCloud search, stream playback & playlist |
+| **SET** | Preset management, folder settings, connection info |
 
 ---
 
-## 📄 License
+## How to Use the STREAM Tab
 
-MIT License — free to use, modify, and share.
+1. Select `▶ YouTube` or `☁ SoundCloud`
+2. Type a track name or artist and tap **Search**
+3. Tap a result row → plays immediately (EQ & gain settings apply)
+4. Tap the **＋ button** → adds to playlist (turns into ✓)
+5. Once tracks are added, a **"Playlist N tracks ▶ Play"** bar appears at the bottom
+6. Tap the bar to expand the list (remove individual tracks or clear all)
+7. Tap **▶ Play** to start continuous playback from the first track
+
+> **Note**: There is a few-second delay before audio starts while yt-dlp resolves the stream URL.
+
+---
+
+## Playback Engine
+
+```
+ffmpeg (EQ / gain processing) → mpv (audio output)
+```
+
+Stream playback uses the same pipeline as local files, so EQ, gain, and the bass/treble sliders all work identically.
+
+---
+
+## Supported Formats
+
+`.wav` `.flac` `.wma` `.aiff` `.aif` `.mp3` `.m4a` `.aac` `.ogg` `.opus`
+
+---
+
+## Differences from the Xubuntu24 Version
+
+| Feature | Android version | Xubuntu24 version |
+|---------|----------------|-------------------|
+| Audio output | mpv (auto BT / wired switching) | aplay / ALSA |
+| UI | Mobile web browser | curses TUI |
+| Album art | In-browser display | feh |
+| Voice recognition | Not supported (planned) | vosk |
+
+For even higher audio quality and more features, consider stepping up to the Xubuntu24 version:  
+→ https://sites.google.com/view/aimusicplayer-sonia/
+
+---
+
+## License
+
+Free for personal and non-commercial use. Credit appreciated when redistributing or modifying.
