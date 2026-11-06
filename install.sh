@@ -187,8 +187,7 @@ case "${1:-open}" in
             WAS=0; is_running && WAS=1
             [ "$WAS" = 1 ] && stop_server
             mv "$TMP" "$APP"
-            echo "OK  Sonia updated"
-            [ "$WAS" = 1 ] && start_server
+            echo "OK  Sonia updated. To start it, type:  sonia"
         else
             rm -f "$TMP"; echo "!   Update failed (your current version still works)"
         fi ;;

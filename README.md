@@ -130,6 +130,13 @@ pip install -U yt-dlp
 **Music stops when the screen is off**  
 → Android Settings → Apps → Termux → Battery → **"Unrestricted"**. On many phones this matters most.
 
+**The music skips or stutters**  
+→ In the SET tab, raise **"🛡 Anti-dropout buffer"** from Large to Max (it applies from the next track; a larger buffer makes pause/skip respond slightly slower).  
+If it persists, also check:
+- Termux's battery setting is **"Unrestricted"**
+- If you use **Bluetooth** earphones/speakers, does it also happen over a wire or the phone speaker? (Bluetooth itself is often the cause)
+- If it only stops while the screen is on, a power-saving mode is the likely culprit — turn it off
+
 **The Termux screen stops responding after `sonia`**  
 → That's normal: while `sonia` runs, that screen *is* Sonia. Swipe in from the left edge and tap "NEW SESSION" to open a fresh screen for `sonia stop` and other commands.
 

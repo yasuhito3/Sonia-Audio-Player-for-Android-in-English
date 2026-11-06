@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-musicaplayer_android.py
+sonia_android.py
 ────────────────────────────────────────────────────────
 Android Termux Hi-Res Music Player with Web Browser UI
 Android Beginner Version of Xubuntu24 Edition (musicaplayerg26x.py)
@@ -18,14 +18,14 @@ Android Beginner Version of Xubuntu24 Edition (musicaplayerg26x.py)
 
 【Setup (Termux)】
   pkg update && pkg upgrade
-  pkg install python ffmpeg mpv yt-dlp
-  pip install mutagen
+  pkg install python ffmpeg mpv
+  pip install -U yt-dlp mutagen
 
   # Grant /sdcard access (first time only)
   termux-setup-storage
 
 【How to Use】
-  python musicaplayer_android.py
+  python sonia_android.py
   → Open http://localhost:8080 in browser
   → From other devices on same Wi-Fi: http://<Termux-IP>:8080
 
@@ -43,8 +43,13 @@ import threading
 import time
 import socket
 import tempfile
+import sys
+import signal
+import struct
+import zlib
+import atexit
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 try:
@@ -90,7 +95,8 @@ SUPPORTED_EXTENSIONS = (
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
 PRESETS_FILE   = os.path.expanduser('~/.musica_android_presets.json')
 WEB_PORT       = 8080
-MPV_SOCKET     = '/tmp/mpvsocket_android'
+MPV_SOCKET     = os.path.join(os.path.expanduser('~'), '.sonia', 'mpvsocket')
+os.makedirs(os.path.dirname(MPV_SOCKET), exist_ok=True)
 
 # ══════════════════════════════════════════════
 #  EQ Presets
@@ -434,6 +440,93 @@ def search_stream(query, source='youtube', max_results=8):
         return {'error': str(e)}
 
 
+# ── YouTube: avoid URLs that return 403 and find a working client automatically ──
+# After YouTube-side changes, URLs from the client yt-dlp picks (e.g. android_vr) can return 403.
+_YT_TRIES = [
+    None,                                              # yt-dlp default
+    'youtube:player_client=default,-android_vr',      # exclude android_vr
+    'youtube:player_client=visionos',
+    'youtube:player_client=tv',
+    'youtube:player_client=ios',
+    'youtube:player_client=web',
+]
+_yt_good = None          # last working setting (tried first next time)
+_yt_has_js = None        # does yt-dlp support --js-runtimes?
+
+
+def _yt_supports_js_runtimes():
+    global _yt_has_js
+    if _yt_has_js is None:
+        try:
+            h = subprocess.run(['yt-dlp', '--help'], capture_output=True, text=True, timeout=20).stdout
+            _yt_has_js = ('--js-runtimes' in h) and bool(shutil.which('node'))
+        except Exception:
+            _yt_has_js = False
+    return _yt_has_js
+
+
+def _probe_url(url, headers):
+    """Can this URL really be played? (fetch only the first 2 bytes)"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={**headers, 'Range': 'bytes=0-1'})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status in (200, 206)
+    except Exception as e:
+        print(f'   ↳ URL check: {e}')
+        return False
+
+
+def _ff_http_opts(headers):
+    """Pass the User-Agent etc. used by yt-dlp on to ffmpeg"""
+    if not headers:
+        return []
+    opts = []
+    ua = headers.get('User-Agent')
+    if ua:
+        opts += ['-user_agent', ua]
+    rest = ''.join(f'{k}: {v}\r\n' for k, v in headers.items()
+                   if k.lower() not in ('user-agent', 'range'))
+    if rest:
+        opts += ['-headers', rest]
+    return opts
+
+
+def _resolve_stream_url(video_url):
+    """Return the audio URL and required headers: (url, headers), or (None, {}) on failure"""
+    global _yt_good
+    is_yt = ('youtube.com' in video_url) or ('youtu.be' in video_url)
+    tries = list(_YT_TRIES) if is_yt else [None]
+    if is_yt and _yt_good in tries:
+        tries.remove(_yt_good)
+        tries.insert(0, _yt_good)
+    for ea in tries:
+        cmd = ['yt-dlp', '-f', 'bestaudio', '-j', '--no-playlist', '--no-warnings']
+        if is_yt and _yt_supports_js_runtimes():
+            cmd += ['--js-runtimes', 'node']
+        if ea:
+            cmd += ['--extractor-args', ea]
+        cmd.append(video_url)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            info = json.loads(r.stdout.strip().splitlines()[0])
+            url = info.get('url') or (info.get('requested_formats') or [{}])[0].get('url')
+            headers = info.get('http_headers') or {}
+        except Exception as e:
+            print(f'   ↳ yt-dlp ({ea or "default"}) failed: {e}')
+            continue
+        if not url:
+            continue
+        if not is_yt:
+            return url, {}
+        if _probe_url(url, headers):
+            _yt_good = ea
+            print(f'🎬 YouTube: OK with {ea or "default"}')
+            return url, headers
+        print(f'   ↳ URL from {ea or "default"} was rejected. Trying another way...')
+    return None, {}
+
+
 def resolve_and_play_stream(video_url, title='', artist='', duration=0, thumbnail='', _internal=False):
     global mpv_proc
     if _internal:
@@ -443,29 +536,26 @@ def resolve_and_play_stream(video_url, title='', artist='', duration=0, thumbnai
     if not _ytdlp_available():
         print('❌ yt-dlp not found')
         return None
-    try:
-        r = subprocess.run(
-            ['yt-dlp', '-f', 'bestaudio', '--get-url', '--no-warnings', video_url],
-            capture_output=True, text=True, timeout=15
-        )
-        stream_url = r.stdout.strip().splitlines()[0]
-        if not stream_url:
-            return None
-    except Exception as e:
-        print(f'❌ resolve error: {e}')
+    stream_url, stream_headers = _resolve_stream_url(video_url)
+    if not stream_url:
+        print('❌ Could not get an audio URL. Try updating yt-dlp: pip install -U yt-dlp')
         return None
 
     af = build_af(state['eq_preset'], state['gain_db'])
     try:
         ff  = subprocess.Popen(
-            ['ffmpeg', '-hide_banner', '-loglevel', 'quiet', '-i', stream_url, '-af', af, '-f', 'wav', '-'],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            ['ffmpeg', '-hide_banner', '-loglevel', 'error'] + _ff_http_opts(stream_headers)
+            + ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5']
+            + ['-i', stream_url, '-af', af, '-f', 'wav', '-'],
+            stdout=subprocess.PIPE, stderr=sys.stderr)
+        enlarge_pipe(ff.stdout)
         mpv = subprocess.Popen(
-            ['mpv', '--no-video', '--really-quiet',
+            ['mpv', '--no-video', '--msg-level=all=error',
              f'--input-ipc-server={MPV_SOCKET}',
-             f'--volume={state["volume"]}', '--audio-buffer=0.5', '-'],
-            stdin=ff.stdout, stderr=subprocess.DEVNULL)
+             f'--volume={state["volume"]}', *mpv_buffer_args(), '-'],
+            stdin=ff.stdout, stderr=sys.stderr)
         ff.stdout.close()
+        _health_check(ff, mpv, 'play')
         mpv_proc = mpv
         state['playing']          = True
         state['paused']           = False
@@ -530,6 +620,37 @@ def stop_all():
     stop_mpv()
 
 
+def _health_check(ff, mpv, label):
+    """Three seconds after playback starts, check that mpv/ffmpeg are alive and log the result"""
+    def run():
+        time.sleep(3)
+        try:
+            if mpv.poll() is not None:
+                print(f'⚠ [{label}] mpv exited (code {mpv.returncode}) — possible audio output or input problem')
+            elif ff is not None and ff.poll() not in (None, 0):
+                print(f'⚠ [{label}] ffmpeg exited (code {ff.returncode}) — possible input URL/file problem')
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _kill_name(name):
+    """Kill processes by name even where pkill is missing (stock Termux)"""
+    if shutil.which('pkill'):
+        subprocess.run(['pkill', '-x', name], stderr=subprocess.DEVNULL)
+        return
+    me = os.getpid()
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit() or int(pid) == me:
+            continue
+        try:
+            with open(f'/proc/{pid}/comm') as fh:
+                if fh.read().strip() == name:
+                    os.kill(int(pid), 9)
+        except Exception:
+            pass
+
+
 def stop_mpv():
     global mpv_proc
     mpv_send(['quit'])
@@ -543,8 +664,8 @@ def stop_mpv():
     mpv_proc = None
     # Kill any remaining mpv/ffmpeg processes
     try:
-        subprocess.run(['pkill', '-x', 'mpv'],   stderr=subprocess.DEVNULL)
-        subprocess.run(['pkill', '-x', 'ffmpeg'], stderr=subprocess.DEVNULL)
+        _kill_name('mpv')
+        _kill_name('ffmpeg')
     except Exception:
         pass
     state['playing'] = False
@@ -559,23 +680,25 @@ def play_track(path):
     af = build_af(state['eq_preset'], state['gain_db'])
 
     cmd_ff = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'quiet',
+        'ffmpeg', '-hide_banner', '-loglevel', 'error',
         '-i', path,
         '-af', af,
         '-f', 'wav', '-'
     ]
     cmd_mpv = [
-        'mpv', '--no-video', '--really-quiet',
+        'mpv', '--no-video', '--msg-level=all=error',
         f'--input-ipc-server={MPV_SOCKET}',
         f'--volume={state["volume"]}',
-        '--audio-buffer=0.2',
+        *mpv_buffer_args(),
         '-'
     ]
 
     try:
-        ff  = subprocess.Popen(cmd_ff,  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        mpv = subprocess.Popen(cmd_mpv, stdin=ff.stdout,        stderr=subprocess.DEVNULL)
+        ff  = subprocess.Popen(cmd_ff,  stdout=subprocess.PIPE, stderr=sys.stderr)
+        enlarge_pipe(ff.stdout)
+        mpv = subprocess.Popen(cmd_mpv, stdin=ff.stdout,        stderr=sys.stderr)
         ff.stdout.close()
+        _health_check(ff, mpv, 'play')
         mpv_proc = mpv
 
         meta = get_metadata(path)
@@ -613,13 +736,15 @@ def play_radio(station):
     stop_mpv()
 
     cmd = [
-        'mpv', '--no-video', '--really-quiet',
+        'mpv', '--no-video', '--msg-level=all=error',
         f'--input-ipc-server={MPV_SOCKET}',
         f'--volume={state["volume"]}',
+        *mpv_buffer_args(), '--cache-pause-wait=3',
         station['url']
     ]
     try:
-        mpv_proc = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
+        mpv_proc = subprocess.Popen(cmd, stderr=sys.stderr)
+        _health_check(None, mpv_proc, 'radio')
         state['playing']        = True
         state['paused']         = False
         state['radio_mode']     = True
@@ -724,6 +849,350 @@ def save_presets(data):
 # ══════════════════════════════════════════════
 #  Web UI HTML (Mobile Optimized)
 # ═════════════════════════���════════════════════
+# ══════════════════════════════════════════════
+#  App mode (PWA) · icon · power saving · fast startup
+# ══════════════════════════════════════════════
+APP_NAME    = 'Sonia'
+APP_DIR     = os.path.join(os.path.expanduser('~'), '.sonia')
+_icon_cache = {}
+_scan_lock  = threading.Lock()
+PID_FILE    = os.path.join(APP_DIR, 'sonia.pid')
+LOG_FILE    = os.path.join(APP_DIR, 'sonia.log')
+
+
+class _Tee:
+    """Write to both the screen and the log file (~/.sonia/sonia.log)"""
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, x):
+        for f in self.streams:
+            try:
+                f.write(x); f.flush()
+            except Exception:
+                pass
+        return len(x)
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+    def fileno(self):
+        return self.streams[0].fileno()
+
+
+def _cleanup_pid():
+    try:
+        if open(PID_FILE).read().strip() == str(os.getpid()):
+            os.remove(PID_FILE)
+    except Exception:
+        pass
+
+
+def _setup_runtime_files():
+    os.makedirs(APP_DIR, exist_ok=True)
+    try:
+        lf = open(LOG_FILE, 'w', encoding='utf-8')
+        sys.stdout = _Tee(sys.stdout, lf)
+        sys.stderr = _Tee(sys.stderr, lf)
+    except Exception:
+        pass
+    with open(PID_FILE, 'w') as fh:
+        fh.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+scan_progress = {'scanning': False, 'done': 0, 'total': 0}
+
+
+def _make_icon_png(size):
+    """Generate the equalizer-style app icon (PNG) with the standard library only"""
+    import math
+    c1, c2 = (124, 106, 247), (22, 16, 64)          # top-left: violet -> bottom-right: navy
+    S = float(size)
+    bw, gap = 0.056 * S, 0.030 * S
+    x0 = (S - (5 * bw + 4 * gap)) / 2 + bw / 2
+    bars = []
+    for i, h in enumerate((0.22, 0.36, 0.50, 0.30, 0.42)):
+        half, r = h * S / 2, bw / 2
+        bars.append((x0 + i * (bw + gap), S / 2 - (half - r), S / 2 + (half - r), r))
+    ymin, ymax = int(S * 0.22), int(S * 0.78) + 1
+    xmin, xmax = int(x0 - bw), int(x0 + 4 * (bw + gap) + bw) + 1
+    rows = []
+    for y in range(size):
+        row = bytearray(b'\x00')
+        for x in range(size):
+            t  = (x + y) / (2.0 * (size - 1))
+            rr = c1[0] + (c2[0] - c1[0]) * t
+            gg = c1[1] + (c2[1] - c1[1]) * t
+            bb = c1[2] + (c2[2] - c1[2]) * t
+            if ymin <= y <= ymax and xmin <= x <= xmax:
+                px, py, cov = x + 0.5, y + 0.5, 0.0
+                for cx, ya, yb, r in bars:
+                    qy = ya if py < ya else (yb if py > yb else py)
+                    a  = 0.5 - (math.hypot(px - cx, py - qy) - r)
+                    if a > cov:
+                        cov = a if a < 1.0 else 1.0
+                if cov > 0:
+                    rr += (255 - rr) * cov
+                    gg += (255 - gg) * cov
+                    bb += (255 - bb) * cov
+            row += bytes((int(rr), int(gg), int(bb)))
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return (struct.pack('>I', len(data)) + tag + data
+                + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(b''.join(rows), 9))
+            + chunk(b'IEND', b''))
+
+
+def get_icon_png(size):
+    """Return the icon (generated once, cached in ~/.sonia/icons)"""
+    if size in _icon_cache:
+        return _icon_cache[size]
+    f = os.path.join(APP_DIR, 'icons', f'sonia-{size}.png')
+    try:
+        with open(f, 'rb') as fh:
+            data = fh.read()
+        if data[:8] == b'\x89PNG\r\n\x1a\n':
+            _icon_cache[size] = data
+            return data
+    except OSError:
+        pass
+    data = _make_icon_png(size)
+    try:
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, 'wb') as fh:
+            fh.write(data)
+    except OSError:
+        pass
+    _icon_cache[size] = data
+    return data
+
+
+MANIFEST = {
+    'name':             APP_NAME,
+    'short_name':       APP_NAME,
+    'description':      'Hi-res oriented mobile music player',
+    'lang':             'en',
+    'start_url':        '/',
+    'scope':            '/',
+    'display':          'standalone',
+    'orientation':      'portrait',
+    'background_color': '#0d0d12',
+    'theme_color':      '#0d0d12',
+    'icons': [
+        {'src': '/icon-192.png', 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any maskable'},
+        {'src': '/icon-512.png', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any maskable'},
+    ],
+}
+
+# Service Worker: watches page navigation only; while the server is stopped it
+# shows a "resting" screen and reconnects automatically. It never touches API calls.
+SW_JS = r'''
+const OFFLINE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0d0d12"><title>Sonia</title>
+<style>
+body{margin:0;background:#0d0d12;color:#eeeef5;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box}
+.b{max-width:340px;line-height:1.9}.i{font-size:56px;animation:p 2.4s ease-in-out infinite}
+@keyframes p{50%{transform:scale(1.12);opacity:.7}}h1{font-size:19px;margin:10px 0 4px}
+p{color:#888899;font-size:13.5px;margin:6px 0}.s{color:#a78bfa;font-size:12px;margin-top:18px}
+button{margin-top:18px;background:#7c6af7;color:#fff;border:none;border-radius:13px;padding:12px 26px;font-size:14px;font-weight:700}
+</style></head><body><div class="b"><div class="i">🎵</div>
+<h1>Sonia is resting</h1>
+<p>Tap the <b>Sonia shortcut</b> (Termux) on your home screen to wake it up.</p>
+<p>This page reconnects automatically once Sonia is running.</p>
+<div class="s" id="s">Waiting for connection...</div>
+<button onclick="location.reload()">Try again</button></div>
+<script>setInterval(function(){fetch('/api/status',{cache:'no-store'}).then(function(r){if(r.ok)location.reload()}).catch(function(){})},2500)</script>
+</body></html>`;
+self.addEventListener('install', e => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', e => {
+  if (e.request.mode === 'navigate') {
+    e.respondWith(fetch(e.request).catch(() =>
+      new Response(OFFLINE, {headers: {'Content-Type': 'text/html; charset=utf-8'}})));
+  }
+});
+'''
+
+
+def _wakelock(on):
+    """Termux wake lock: keep the CPU awake only while playing (music continues with the screen off)"""
+    exe = shutil.which('termux-wake-lock' if on else 'termux-wake-unlock')
+    if not exe:
+        return
+    try:
+        subprocess.run([exe], timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def _wakelock_watcher():
+    """Hold the lock while playing; release it 90 s after playback stops, to save battery while idle"""
+    held, idle_since = False, time.time()
+    while True:
+        time.sleep(5)
+        try:
+            playing = bool(state.get('playing'))
+        except Exception:
+            playing = False
+        if playing:
+            idle_since = time.time()
+            if not held:
+                _wakelock(True)
+                held = True
+        elif held and time.time() - idle_since > 90:
+            _wakelock(False)
+            held = False
+
+
+def _initial_scan():
+    """Initial library scan. The server starts first and the scan runs in the background, so the app is usable right away"""
+    with _scan_lock:
+        _initial_scan_body()
+
+
+def _scan_and_load(verbose=False):
+    scan_progress.update(scanning=True, done=0, total=0)
+    try:
+        tracks = scan_music()
+        scan_progress['total'] = len(tracks)
+        if verbose and tracks:
+            print(f'   Found {len(tracks)} tracks — loading metadata...')
+        for i, t in enumerate(tracks):
+            get_metadata(t)
+            scan_progress['done'] = i + 1
+            if verbose and (i + 1) % 100 == 0:
+                print(f'   {i + 1}/{len(tracks)} complete')
+        with _db_lock:
+            state['playlist'] = list(track_db.keys())
+        return tracks
+    finally:
+        scan_progress['scanning'] = False
+
+
+def _initial_scan_body():
+    print('\n📂 Scanning music library...')
+    tracks = _scan_and_load(verbose=True)
+    if tracks:
+        print(f'✅  Loaded {len(tracks)} tracks\n')
+    else:
+        print('⚠   No tracks found')
+        print('    ⚠ Have you run termux-setup-storage?')
+        print('    If done, folders should exist under ~/storage/\n')
+
+
+# ── Anti-dropout read-ahead buffer ──
+# level: (mpv audio buffer sec, read-ahead sec, read-ahead cap MiB)
+BUFFER_LEVELS = {
+    1: (0.5, 10, 32),
+    2: (1.0, 30, 64),
+    3: (2.0, 90, 128),
+}
+CONFIG_FILE = os.path.join(APP_DIR, 'config.json')
+
+
+def _load_config():
+    try:
+        with open(CONFIG_FILE, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_config(cfg):
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f)
+    except Exception:
+        pass
+
+
+def buffer_level():
+    lv = state.get('buffer_level')
+    return lv if lv in BUFFER_LEVELS else 2
+
+
+_mpv_opts_text = None
+
+
+def _mpv_supports(opt):
+    """Does this mpv build know the option? (checked once; avoids passing unknown flags)"""
+    global _mpv_opts_text
+    if _mpv_opts_text is None:
+        try:
+            _mpv_opts_text = subprocess.run(['mpv', '--list-options'], capture_output=True,
+                                            text=True, timeout=10).stdout
+        except Exception:
+            _mpv_opts_text = ''
+    return opt in _mpv_opts_text
+
+
+def _mpv_opt_range(opt):
+    """Read the allowed range of an option from `mpv --list-options`, e.g. '(1 to 500)'."""
+    import re as _re
+    for line in (_mpv_opts_text or '').splitlines():
+        if line.strip().startswith(opt):
+            m = _re.search(r'\(([-\d.]+) to ([-\d.]+|any)\)', line)
+            if m:
+                lo = float(m.group(1))
+                hi = float('inf') if m.group(2) == 'any' else float(m.group(2))
+                return lo, hi
+    return None
+
+
+def _mpv_args_ok(args):
+    """Dry run: would this mpv accept these options? (a rejected option would stop playback entirely)"""
+    try:
+        return subprocess.run(['mpv', '--no-config', *args, '--version'],
+                              capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+_buf_args_cache = {}
+
+
+def mpv_buffer_args():
+    """mpv: audio output buffer + read-ahead cache (stdin pipe and radio streams)"""
+    lv = buffer_level()
+    if lv in _buf_args_cache:
+        return list(_buf_args_cache[lv])
+    ab, ra, mib = BUFFER_LEVELS[lv]
+    base = [f'--audio-buffer={ab}', '--cache=yes', f'--demuxer-readahead-secs={ra}',
+            f'--demuxer-max-bytes={mib}MiB', '--demuxer-max-back-bytes=4MiB']
+    sles_ms = None
+    if _mpv_supports('--opensles-buffer-size-in-ms'):
+        # Android's OpenSL ES output buffer: the part that actually runs dry during dropouts.
+        # It has an upper limit (500 ms on current mpv), so stay inside the range mpv reports.
+        lo, hi = _mpv_opt_range('--opensles-buffer-size-in-ms') or (1, 500)
+        sles_ms = int(min(max(ab * 1000, lo), hi))
+    args = base + ([f'--opensles-buffer-size-in-ms={sles_ms}'] if sles_ms else [])
+    if not _mpv_args_ok(args):
+        print('⚠ mpv rejected the buffer options; retrying without the OpenSL ES option')
+        sles_ms, args = None, list(base)
+        if not _mpv_args_ok(args):
+            print('⚠ mpv rejected the cache options too; using the audio buffer only')
+            args = [f'--audio-buffer={ab}']
+    print(f'🛡 buffer level {lv}: audio {ab}s, read-ahead {ra}s, OpenSL ES buffer: {str(sles_ms) + " ms" if sles_ms else "n/a"}')
+    _buf_args_cache[lv] = list(args)
+    return list(args)
+
+
+def enlarge_pipe(f, size=1 << 20):
+    """Enlarge the ffmpeg->mpv pipe (default 64 KB -> 1 MB) so ffmpeg can run ahead and build a cushion"""
+    try:
+        import fcntl
+        fcntl.fcntl(f.fileno(), 1031, size)      # F_SETPIPE_SZ
+    except Exception:
+        pass
+
+
 def build_html():
     radio_json = json.dumps(RADIO_STATIONS, ensure_ascii=False)
     eq_json    = json.dumps(EQ_LABELS,      ensure_ascii=False)
@@ -735,8 +1204,12 @@ def build_html():
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0d0d12">
-<title>Musica Player</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>{APP_NAME}</title>
 <style>
 :root{{
   --bg:#0d0d12; --sf:#17171f; --sf2:#22222e; --ac:#7c6af7; --ac2:#a78bfa;
@@ -1022,6 +1495,22 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:22px;heig
   </div>
   <button class="btn-full" onclick="rescan()">📂 Rescan</button>
 
+  <div class="sec" style="margin-top:24px">🛡 Anti-dropout buffer</div>
+  <div style="background:var(--sf);border-radius:13px;padding:14px;font-size:13px;line-height:1.8;color:var(--tx2);margin-bottom:10px">
+    <div style="margin-bottom:10px">If the music stutters, choose a larger buffer. It applies from the next track. (Larger = pause/skip respond a little slower.)</div>
+    <div style="display:flex;gap:8px" id="buf-btns">
+      <button class="btn-full ghost" data-lv="1" onclick="setBuffer(1)" style="flex:1;margin:0">Standard</button>
+      <button class="btn-full" data-lv="2" onclick="setBuffer(2)" style="flex:1;margin:0">Large</button>
+      <button class="btn-full ghost" data-lv="3" onclick="setBuffer(3)" style="flex:1;margin:0">Max</button>
+    </div>
+  </div>
+  <div class="sec" style="margin-top:24px">📲 Use as an app</div>
+  <div style="background:var(--sf);border-radius:13px;padding:14px;font-size:13px;line-height:1.8;color:var(--tx2);margin-bottom:10px">
+    <div id="install-txt" style="margin-bottom:10px">Add an icon to your home screen to launch Sonia <b>like an app</b>, without the browser frame.</div>
+    <button class="btn-full" id="btn-install" onclick="installApp()" style="margin-bottom:0">📲 Add to Home Screen</button>
+  </div>
+  <button class="btn-full ghost" onclick="quitServer()" style="color:var(--red)">⏻ Quit Sonia (save battery)</button>
+
   <div class="sec" style="margin-top:24px">Connection Info</div>
   <div style="background:var(--sf);border-radius:13px;padding:14px;font-size:13px;line-height:2;color:var(--tx2)">
     <div>🌐 Server: <span style="color:var(--ac2)" id="srv-url"></span></div>
@@ -1055,6 +1544,37 @@ let st        = {{}};
 let chipsReady = false;
 let coverTs    = 0;
 
+function updateBufUI(lv) {{ document.querySelectorAll('#buf-btns button').forEach(b => {{ b.className = 'btn-full' + (+b.dataset.lv === lv ? '' : ' ghost'); }}); }}
+async function setBuffer(lv) {{
+  try {{ await fetch('/api/buffer',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{level:lv}})}}); }} catch(e) {{}}
+  updateBufUI(lv);
+}}
+async function loadBuf() {{ try {{ const s=await (await fetch('/api/status')).json(); updateBufUI(s.buffer||2); }} catch(e) {{}} }}
+
+// ── App mode (PWA) ──
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{{}});
+let _installEv = null;
+window.addEventListener('beforeinstallprompt', e => {{ e.preventDefault(); _installEv = e; }});
+window.addEventListener('appinstalled', () => {{ _installEv = null; initAppCard(); }});
+function isStandalone() {{ return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }}
+function initAppCard() {{
+  const b = document.getElementById('btn-install'), t = document.getElementById('install-txt');
+  if (!b || !t) return;
+  const on = isStandalone();
+  b.style.display = on ? 'none' : '';
+  t.innerHTML = on ? '✅ Running as an app'
+                   : 'Add an icon to your home screen to launch Sonia <b>like an app</b>, without the browser frame.';
+}}
+async function installApp() {{
+  if (_installEv) {{ _installEv.prompt(); try {{ await _installEv.userChoice; }} catch(e) {{}} _installEv = null; return; }}
+  alert('Open the browser menu (⋮) and choose "Add to Home screen" or "Install app".');
+}}
+async function quitServer() {{
+  if (!confirm('Quit Sonia? To start it again, tap the Sonia shortcut on your home screen.')) return;
+  try {{ await fetch('/api/shutdown', {{method:'POST', headers:{{'X-Sonia':'1'}}}}); }} catch(e) {{}}
+  document.body.innerHTML = '<div style="text-align:center;padding:90px 24px;color:#888899;font-size:15px;line-height:2">👋<br>Sonia has quit<br><span style="font-size:12px">See you next time</span></div>';
+}}
+
 // ── Page Switching ──
 function showPage(id, btn) {{
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1063,7 +1583,7 @@ function showPage(id, btn) {{
   btn.classList.add('active');
   if (id==='pg-lib'   && allTracks.length===0) doScan();
   if (id==='pg-radio' ) renderRadio();
-  if (id==='pg-set'   ) {{ fetchPresets(); fetchDirs(); document.getElementById('srv-url').textContent=location.href; }}
+  if (id==='pg-set'   ) {{ fetchPresets(); fetchDirs(); document.getElementById('srv-url').textContent=location.href; initAppCard(); loadBuf(); }}
 }}
 
 // ── Time Format ──
@@ -1204,9 +1724,16 @@ document.getElementById('prog-bar').addEventListener('click', e => {{
 
 // ── Library ──
 async function doScan() {{
-  document.getElementById('trk-list').innerHTML='<div class="loading">📂 Scanning... Please wait</div>';
-  const r=await fetch('/api/scan',{{method:'POST'}});
-  const d=await r.json();
+  const el=document.getElementById('trk-list');
+  el.innerHTML='<div class="loading">📂 Scanning... Please wait</div>';
+  const tm=setInterval(async()=>{{
+    try {{
+      const s=(await (await fetch('/api/status')).json()).scan||{{}};
+      el.innerHTML='<div class="loading">📂 '+(s.total?('Loading tracks... '+s.done+' / '+s.total):'Looking for music folders...')+'</div>';
+    }} catch(e) {{}}
+  }},1500);
+  try {{ const r=await fetch('/api/scan',{{method:'POST'}}); await r.json(); }}
+  finally {{ clearInterval(tm); }}
   await fetchTracks();
 }}
 
@@ -1631,6 +2158,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _bytes(self, body, ctype, cache=False, extra=None):
+        self.send_response(200)
+        self.send_header('Content-Type',   ctype)
+        self.send_header('Content-Length', len(body))
+        self.send_header('Cache-Control',  'public, max-age=86400' if cache else 'no-cache')
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
     def _html(self, html):
         body = html.encode('utf-8')
         self.send_response(200)
@@ -1656,6 +2193,17 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/':
             self._html(HTML)
 
+        elif p == '/manifest.webmanifest':
+            self._bytes(json.dumps(MANIFEST, ensure_ascii=False).encode('utf-8'),
+                        'application/manifest+json; charset=utf-8')
+
+        elif p == '/sw.js':
+            self._bytes(SW_JS.encode('utf-8'), 'application/javascript; charset=utf-8',
+                        extra={'Service-Worker-Allowed': '/'})
+
+        elif p in ('/icon-192.png', '/icon-512.png'):
+            self._bytes(get_icon_png(192 if '192' in p else 512), 'image/png', cache=True)
+
         elif p == '/api/status':
             pos = 0.0
             if state['playing'] and not state['radio_mode']:
@@ -1666,6 +2214,8 @@ class Handler(BaseHTTPRequestHandler):
                 'position':  pos,
                 'has_cover': bool(cv and os.path.exists(cv)),
                 'cover_ts':  int(os.path.getmtime(cv)) if cv and os.path.exists(cv) else 0,
+                'scan':      dict(scan_progress),
+                'buffer':    buffer_level(),
             })
 
         elif p == '/api/tracks':
@@ -1725,14 +2275,33 @@ class Handler(BaseHTTPRequestHandler):
         p    = urlparse(self.path).path
         data = self._body()
 
+        # ── Read-ahead buffer setting ──
+        if p == '/api/buffer':
+            try:
+                lv = int(data.get('level', 2))
+            except Exception:
+                lv = 2
+            if lv in BUFFER_LEVELS:
+                state['buffer_level'] = lv
+                cfg = _load_config(); cfg['buffer_level'] = lv; _save_config(cfg)
+            self._json({'ok': True, 'level': buffer_level()})
+            return
+
+        # ── Quit (from the app only; a custom header blocks cross-site requests) ──
+        if p == '/api/shutdown':
+            if self.client_address[0] not in ('127.0.0.1', '::1') or self.headers.get('X-Sonia') != '1':
+                self._json({'error': 'forbidden'}, 403)
+                return
+            self._json({'ok': True})
+            threading.Timer(0.4, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+            return
+
         # ── Scan ──
         if p == '/api/scan':
             global MUSIC_DIRS
-            MUSIC_DIRS = _find_all_music_dirs()
-            tracks = scan_music()
-            for t in tracks: get_metadata(t)
-            with _db_lock:
-                state['playlist'] = list(track_db.keys())
+            with _scan_lock:   # if the startup scan is still running, wait for it (no duplicate work)
+                MUSIC_DIRS = _find_all_music_dirs()
+                tracks = _scan_and_load()
             self._json({'count': len(tracks), 'dirs': MUSIC_DIRS})
 
         # ── Playback ──
@@ -1943,8 +2512,25 @@ def get_local_ip():
 
 
 def main():
+    # Make the icons only and exit:  python sonia_android.py --make-icons <output dir>
+    if len(sys.argv) >= 3 and sys.argv[1] == '--make-icons':
+        out = os.path.expanduser(sys.argv[2])
+        os.makedirs(out, exist_ok=True)
+        for sz in (192, 512):
+            with open(os.path.join(out, f'sonia-{sz}.png'), 'wb') as fh:
+                fh.write(get_icon_png(sz))
+        print(f'icons -> {out}')
+        return
+
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    _setup_runtime_files()
+    state['buffer_level'] = _load_config().get('buffer_level', 2)
     print('═' * 58)
-    print('🎵  Musica Player  Android Edition (Termux)')
+    print(f'🎵  {APP_NAME}  Android Edition (Termux)')
     print('═' * 58)
 
     # ffmpeg / mpv / yt-dlp check
@@ -1952,27 +2538,9 @@ def main():
         if not shutil.which(cmd):
             print(f'❌  {cmd} not found')
             if cmd == 'yt-dlp':
-                print(f'   → pkg install yt-dlp  (needed for YouTube/SoundCloud)')
+                print('   → pip install -U yt-dlp  (needed for YouTube/SoundCloud)')
             else:
                 print(f'   → pkg install {cmd}')
-
-    # Initial scan
-    print('\n📂 Scanning music library...')
-    tracks = scan_music()
-    if tracks:
-        print(f'   Found {len(tracks)} tracks — loading metadata...')
-        for i, t in enumerate(tracks):
-            get_metadata(t)
-            if (i + 1) % 100 == 0:
-                print(f'   {i + 1}/{len(tracks)} complete')
-        with _db_lock:
-            state['playlist'] = list(track_db.keys())
-        print(f'✅  Loaded {len(tracks)} tracks\n')
-    else:
-        print('⚠   No tracks found')
-        print("    ⚠ Have you run termux-setup-storage?")
-    print("    If done, folders should exist under ~/storage/")
-    print("    In Termux: ls ~/storage/  to check\n")
 
     ip = get_local_ip()
     print(f'🌐  Web server started')
@@ -1981,7 +2549,9 @@ def main():
     print(f'\n    Ctrl+C to exit')
     print('═' * 58)
 
-    server = HTTPServer(('0.0.0.0', WEB_PORT), Handler)
+    # Threaded server: other actions stay responsive during scans and stream lookups
+    ThreadingHTTPServer.daemon_threads = True
+    server = ThreadingHTTPServer(('0.0.0.0', WEB_PORT), Handler)
     server.timeout = 1.0
 
     import signal, sys as _sys
@@ -1990,6 +2560,7 @@ def main():
         """Clean shutdown on Ctrl+C"""
         print("\n👋 Shutting down...")
         stop_mpv()
+        _wakelock(False)
         global stop_playlist
         stop_playlist = True
         t = threading.Thread(target=server.shutdown, daemon=True)
@@ -2013,6 +2584,10 @@ def main():
         exists = "✅" if os.path.isdir(d) else "❌"
         print(f"   {exists} {d}")
     print()
+
+    # Start the scan and the battery watcher in the background
+    threading.Thread(target=_initial_scan,     daemon=True).start()
+    threading.Thread(target=_wakelock_watcher, daemon=True).start()
 
     try:
         server.serve_forever()
